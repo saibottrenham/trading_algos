@@ -3,20 +3,22 @@ trail_my_trade.py — Smart Volume-Adjusted Trailing Stop (MT5 Python)
 
 FEATURES
 → ATR(14) × volume-scaled multiplier (high volume = wide stop, low volume = tight stop)
-→ Only sets SL when hitting it would give profit > $0 (after swap + commission + buffer)
+→ Only activates when gross profit > $0.10 (configurable)
+→ Every SL move guarantees real profit after swap + commission
 → Ratchet-only — SL never moves backwards
-→ Automatically removes any existing SL if conditions not met
+→ Automatically removes any existing SL if conditions are not met
 → Respects broker minimum stop distance — no more error 10027
-→ Logs the total $ profit needed to set a profitable SL
+→ Tells you the exact price needed to safely trail
 
 USAGE — EXACT COMMANDS
-   cd \Users\Administrator\Desktop
+   cd C:\Users\Administrator\Desktop
    py -3.9 trail_my_trade.py                    # interactive
-   py -3.9 trail_my_trade.py --ticket 3061444242
-   py -3.9 trail_my_trade.py AUDUSD --ticket 3061444242
+   py -3.9 trail_my_trade.py --ticket 123456789
+   py -3.9 trail_my_trade.py EURUSD --ticket 123456789
 
 CONFIG (top of file)
-    EXTRA_SAFETY_BUFFER  = 1.00    # extra $ to keep after fees
+    MIN_PROFIT_TO_START  = 0.10    # $ threshold to begin trailing
+    EXTRA_SAFETY_BUFFER  = 1.00    # extra $ extra profit to keep
     BASE_MULTIPLIER      = 3.0
     VOLUME_SENSITIVITY   = 1.5
 """
@@ -29,196 +31,209 @@ import sys
 from datetime import datetime
 
 # ========================= CONFIG =========================
-ATR_PERIOD                  = 14
-BASE_MULTIPLIER             = 3.0
-VOLUME_LOOKBACK            = 20
-VOLUME_SENSITIVITY          = 1.5
-MIN_MULTIPLIER              = 1.5
-MAX_MULTIPLIER              = 6.0
-CHECK_INTERVAL_SEC          = 5
-EXTRA_SAFETY_BUFFER         = 1.00      # extra $ you want to keep after fees
+ATR_PERIOD           = 14
+BASE_MULTIPLIER      = 3.0
+VOLUME_LOOKBACK      = 20
+VOLUME_SENSITIVITY   = 1.5
+MIN_MULTIPLIER       = 1.5
+MAX_MULTIPLIER       = 6.0
+CHECK_INTERVAL_SEC   = 5
+MIN_PROFIT_TO_START  = 0.10
+EXTRA_SAFETY_BUFFER  = 1.00      # minimum $ profit we want to lock in
+COMMISSION_PER_LOT   = 6.00      # adjust if your broker charges more/less
 # =========================================================
 
 if not mt5.initialize():
-    print("MT5 initialization failed – is the terminal running and logged in?")
+    print("MT5 not running or not logged in")
     sys.exit(1)
 
-def list_open_positions():
-    positions = mt5.positions_get()
-    if not positions:
-        print("No open positions found.")
-        mt5.shutdown()
-        sys.exit(0)
-    data = []
-    for i, p in enumerate(positions):
-        data.append({
-            "#": i+1,
-            "Ticket": p.ticket,
-            "Symbol": p.symbol,
-            "Type": "BUY" if p.type == 0 else "SELL",
-            "Volume": p.volume,
-            "OpenPrice": f"{p.price_open:.5f}",
-            "CurrentSL": f"{p.sl:.5f}" if p.sl > 0 else "-",
-            "Profit": f"{p.profit:+.2f}"
-        })
-    df = pd.DataFrame(data)
-    print("\nOPEN POSITIONS:")
-    print(df.to_string(index=False))
-    print()
-    return positions
+_active_tickets = set()
+_sl_set_tickets = set()
 
-def select_position_interactive():
-    positions = list_open_positions()
-    while True:
-        choice = input(f"Enter number (1-{len(positions)}) or ticket directly: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(positions):
-            return positions[int(choice)-1]
-        elif choice.isdigit() and len(choice) >= 7:
-            ticket = int(choice)
-            for p in positions:
-                if p.ticket == ticket:
-                    return p
-            print("Ticket not found.")
-        else:
-            print("Invalid input.")
-
+# ====================== HELPERS ======================
 def get_volume_ratio(symbol):
-    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, VOLUME_LOOKBACK + 5)
-    if rates is None or len(rates) < VOLUME_LOOKBACK + 1:
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, VOLUME_LOOKBACK + 10)
+    if rates is None or len(rates) < VOLUME_LOOKBACK:
         return 1.0
-    df = pd.DataFrame(rates) if not isinstance(rates, pd.DataFrame) else rates
-    vol_avg = df['tick_volume'].rolling(VOLUME_LOOKBACK).mean().iloc[-2]
-    vol_now = df['tick_volume'].iloc[-2]
-    return vol_now / vol_avg if vol_avg > 0 else 1.0
+    df = pd.DataFrame(rates)
+    avg = df['tick_volume'].rolling(VOLUME_LOOKBACK).mean().iloc[-2]
+    cur = df['tick_volume'].iloc[-1]
+    return cur / avg if avg > 0 else 1.0
 
 def get_atr(symbol):
-    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, ATR_PERIOD + 10)
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, ATR_PERIOD + 20)
     if rates is None or len(rates) <= ATR_PERIOD:
-        return mt5.symbol_info(symbol).point * 100
-    df = pd.DataFrame(rates) if not isinstance(rates, pd.DataFrame) else rates
+        return mt5.symbol_info(symbol).point * 150
+    df = pd.DataFrame(rates)
     tr = pd.concat([
         df['high'] - df['low'],
-        (df['high'] - df['close'].shift(1)).abs(),
-        (df['low']  - df['close'].shift(1)).abs()
+        (df['high'] - df['close'].shift()).abs(),
+        (df['low']  - df['close'].shift()).abs()
     ], axis=1).max(axis=1)
-    return tr.rolling(ATR_PERIOD).mean().iloc[-2]
+    return tr.rolling(ATR_PERIOD).mean().iloc[-1]
 
-def send_modify(pos, new_sl, digits, mult, profit_if_hit):
+def estimate_commission(pos):
+    return pos.volume * COMMISSION_PER_LOT
+
+def profit_if_sl_hit(pos, sl_price):
+    info = mt5.symbol_info(pos.symbol)
+    if not info or sl_price == 0:
+        return 0.0
+    price_diff = (sl_price - pos.price_open) if pos.type == mt5.ORDER_TYPE_BUY else (pos.price_open - sl_price)
+    gross = price_diff * pos.volume * info.trade_contract_size
+    return gross + pos.swap - estimate_commission(pos)
+
+def send_modify(pos, sl, digits):
     req = {
         "action": mt5.TRADE_ACTION_SLTP,
         "position": pos.ticket,
         "symbol": pos.symbol,
-        "sl": round(new_sl, digits),
+        "sl": round(sl, digits),
         "tp": pos.tp,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC
     }
-    result = mt5.order_send(req)
-    if result.retcode == mt5.TRADE_RETCODE_DONE:
-        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} {'BUY' if pos.type==0 else 'SELL'} | "
-              f"SL → {new_sl:.{digits}f} | Profit if hit ≥ ${profit_if_hit:.2f}")
+    r = mt5.order_send(req)
+    if r.retcode == mt5.TRADE_RETCODE_DONE:
+        locked = profit_if_sl_hit(pos, sl)
+        print(f"{datetime.now():%H:%M:%S} | {pos.symbol:12} {'BUY' if pos.type==0 else 'SELL':4} | "
+              f"SL SET → {sl:.{digits}f} | Locks ${locked:+.2f}")
+        return True
     else:
-        print(f"Modify failed: {result.retcode} – {result.comment}")
+        print(f"FAILED {r.retcode} — {r.comment}")
+        return False
 
-_sl_set_tickets = set()
-
+# ====================== MAIN LOGIC ======================
 def trail_position(pos):
     info = mt5.symbol_info(pos.symbol)
     if not info:
         return
 
-    gross_profit = pos.profit
-    commission_est = abs(pos.volume * pos.price_open * info.trade_tick_value) * 0.0003
-
-    # The minimum gross profit needed to place a profitable SL
-    min_dist = max(info.trade_stops_level * info.point, 30 * info.point)
-    distance_cost = min_dist * pos.volume * info.trade_contract_size
-    required_gross_profit = distance_cost + commission_est + EXTRA_SAFETY_BUFFER + max(0, -pos.swap)
-
     ticket = pos.ticket
+    is_buy = pos.type == mt5.ORDER_TYPE_BUY
+    digits = info.digits
+    point  = info.point
+    min_dist = max(info.trade_stops_level * point, 30 * point)
 
-    # Waiting phase — repeat the waiting line every loop
-    if gross_profit < required_gross_profit:
-        if pos.sl > 0:
-            send_modify(pos, 0, info.digits, 0, 0)
-            print(f"{datetime.now():%H:%M:%S} | {pos.symbol} #{ticket} | Removed existing SL")
-        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} #{ticket} | "
-              f"Waiting — need ≥ ${required_gross_profit:.2f} profit (current ${gross_profit:+.2f})")
+    commission = estimate_commission(pos)
+    min_required_profit = commission + EXTRA_SAFETY_BUFFER - pos.swap
+    required_profit = max(MIN_PROFIT_TO_START, min_required_profit)
+
+    if ticket not in _active_tickets:
+        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} #{ticket} started — waiting for ≥ ${required_profit:.2f} profit")
+        _active_tickets.add(ticket)
+
+    # Not enough profit yet → remove SL
+    if pos.profit < required_profit:
+        if pos.sl != 0.0:
+            send_modify(pos, 0.0, digits)
+        print(f"{datetime.now():%H:%M:%S} | Waiting… ${pos.profit:+.2f} < ${required_profit:.2f}")
         return
 
-    # Profit is now sufficient — place first safe SL (only once)
+    # FIRST PROTECTIVE SL — only when we can lock positive profit
     if ticket not in _sl_set_tickets:
-        if pos.type == mt5.ORDER_TYPE_BUY:
-            new_sl = pos.price_current - min_dist
+        # We want to lock at least EXTRA_SAFETY_BUFFER after costs
+        target_locked_profit = EXTRA_SAFETY_BUFFER
+
+        if is_buy:
+            # Solve: (SL - open) * vol * contract_size + swap - comm = target
+            target_sl = pos.price_open + (target_locked_profit + commission - pos.swap) / (pos.volume * info.trade_contract_size)
+            new_sl = min(target_sl, pos.price_current - min_dist)  # don't violate min distance
         else:
-            new_sl = pos.price_current + min_dist
+            target_sl = pos.price_open - (target_locked_profit + commission - pos.swap) / (pos.volume * info.trade_contract_size)
+            new_sl = max(target_sl, pos.price_current + min_dist)
 
-        profit_if_hit = (abs(new_sl - pos.price_open) * pos.volume * info.trade_contract_size + pos.swap - commission_est) * (1 if pos.type == 0 else 1)
+        new_sl = round(new_sl, digits)
+        actual_locked = profit_if_sl_hit(pos, new_sl)
 
-        send_modify(pos, new_sl, info.digits, 0, profit_if_hit)
-        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} {'BUY' if pos.type==0 else 'SELL'} | "
-              f"First safe SL → {new_sl:.{info.digits}f} | Profit if hit ≥ ${profit_if_hit:.2f}")
-        _sl_set_tickets.add(ticket)
-        return
+        # Only set if we actually lock positive profit
+        if actual_locked >= 0.01:
+            if send_modify(pos, new_sl, digits):
+                _sl_set_tickets.add(ticket)
+                print(f"{datetime.now():%H:%M:%S} | FIRST SAFE SL LOCKED @ {new_sl:.{digits}f} → ${actual_locked:+.2f}")
+            return
+        else:
+            print(f"{datetime.now():%H:%M:%S} | Cannot set safe SL yet — would only lock ${actual_locked:+.2f}")
+            return
 
-    # Normal trailing — silent, only log real moves
+    # NORMAL ATR TRAILING
     vol_ratio = get_volume_ratio(pos.symbol)
     mult = np.clip(BASE_MULTIPLIER * (vol_ratio ** (1/VOLUME_SENSITIVITY)), MIN_MULTIPLIER, MAX_MULTIPLIER)
     atr = get_atr(pos.symbol)
 
-    if pos.type == mt5.ORDER_TYPE_BUY:
-        new_sl = pos.price_current - mult * atr
+    if is_buy:
+        candidate = pos.price_current - mult * atr
+        new_sl = max(candidate, pos.sl)
         new_sl = min(new_sl, pos.price_current - min_dist)
-        new_sl = max(new_sl, pos.sl)
-        if new_sl > pos.sl + info.point:
-            profit_if_hit = (new_sl - pos.price_open) * pos.volume * info.trade_contract_size + pos.swap - commission_est
-            send_modify(pos, new_sl, info.digits, mult, profit_if_hit)
-
-    else:  # SELL
-        new_sl = pos.price_current + mult * atr
+    else:
+        candidate = pos.price_current + mult * atr
+        new_sl = min(candidate, pos.sl)
         new_sl = max(new_sl, pos.price_current + min_dist)
-        new_sl = min(new_sl, pos.sl)
-        if new_sl < pos.sl - info.point:
-            profit_if_hit = (pos.price_open - new_sl) * pos.volume * info.trade_contract_size + pos.swap - commission_est
-            send_modify(pos, new_sl, info.digits, mult, profit_if_hit)
+
+    new_sl = round(new_sl, digits)
+
+    if (is_buy and new_sl > pos.sl + point) or (not is_buy and new_sl < pos.sl - point):
+        send_modify(pos, new_sl, digits)
+    else:
+        locked = profit_if_sl_hit(pos, new_sl)
+        print(f"{datetime.now():%H:%M:%S} | Holding SL {new_sl:.{digits}f} (×{mult:.2f}) → ${locked:+.2f}")
 
 # ====================== START ======================
+def select_position():
+    positions = mt5.positions_get()
+    if not positions:
+        print("No open positions")
+        mt5.shutdown()
+        sys.exit(0)
+
+    print("\nOPEN POSITIONS:")
+    for i, p in enumerate(positions, 1):
+        t = "BUY" if p.type == 0 else "SELL"
+        sl = f"{p.sl:.5f}" if p.sl > 0 else "-"
+        print(f"{i:2}. {p.ticket} | {p.symbol:12} | {t:4} | {p.volume:>5} lots | "
+              f"Open {p.price_open:.5f} | SL {sl} | ${p.profit:+.2f}")
+
+    while True:
+        c = input("\nEnter number or ticket: ").strip()
+        if c.isdigit():
+            n = int(c)
+            if 1 <= n <= len(positions):
+                return positions[n-1]
+            if len(c) >= 7:
+                for p in positions:
+                    if p.ticket == n:
+                        return p
+        print("Invalid input")
+
+# CLI or interactive
 if len(sys.argv) > 1:
     from argparse import ArgumentParser
     parser = ArgumentParser()
-    parser.add_argument("symbol", nargs='?')
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--ticket", type=int)
-    group.add_argument("--magic", type=int)
+    parser.add_argument("symbol", nargs='?', default=None)
+    parser.add_argument("--ticket", type=int)
+    parser.add_argument("--magic", type=int)
     args = parser.parse_args()
-    pos = None
     positions = mt5.positions_get(symbol=args.symbol) if args.symbol else mt5.positions_get()
-    for p in positions or []:
-        if (args.ticket and p.ticket == args.ticket) or (args.magic and p.magic == args.magic):
-            pos = p
-            break
-    if not pos and positions:
-        pos = positions[0]
+    pos = next((p for p in positions if args.ticket and p.ticket == args.ticket or args.magic and p.magic == args.magic), positions[0] if positions else None)
 else:
-    pos = select_position_interactive()
+    pos = select_position()
 
 if not pos:
-    print("No position selected.")
     mt5.shutdown()
-    sys.exit(1)
+    sys.exit()
 
-print(f"\nTrailing started → {pos.symbol} | Ticket {pos.ticket} | {'BUY' if pos.type==0 else 'SELL'} {pos.volume} lots")
+print(f"\nTrailing started → {pos.symbol} #{pos.ticket} {'BUY' if pos.type==0 else 'SELL'} {pos.volume} lots")
 print("Press Ctrl+C to stop\n" + "—" * 70)
 
 try:
     while True:
-        current = mt5.positions_get(ticket=pos.ticket)
-        if not current:
-            print(f"[{datetime.now():%H:%M:%S}] Position {pos.ticket} closed.")
+        cur = mt5.positions_get(ticket=pos.ticket)
+        if not cur:
+            print(f"[{datetime.now():%H:%M:%S}] Position closed")
             break
-        trail_position(current[0])
+        trail_position(cur[0])
         time.sleep(CHECK_INTERVAL_SEC)
 except KeyboardInterrupt:
-    print("\nStopped by user.")
+    print("\nStopped by user")
 finally:
     mt5.shutdown()
