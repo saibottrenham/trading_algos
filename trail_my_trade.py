@@ -1,11 +1,39 @@
-# trail_my_trade.py
-# scp -i ~/Desktop/meta.pem ~/trail_my_trade.py Administrator@ec2-3-239-73-201.compute-1.amazonaws.com:C:/Users/Administrator/Desktop/
-# run the program and select the ticket from a selection in local console
-# ssh -i ~/Desktop/meta.pem Administrator@ec2-3-239-73-201.compute-1.amazonaws.com "cd C:/Users/Administrator/Desktop && py -3.9 trail_my_trade.py"
-# to trail a single ticket as a background process
-# ssh -i ~/Desktop/meta.pem Administrator@ec2-3-239-73-201.compute-1.amazonaws.com"cd C:/Users/Administrator/Desktop && nohup py -3.9 trail_my_trade.py --ticket 111222333 > t1.log 2>&1 &"
-# to kill the trailing trade 
-# ssh -i ~/Desktop/meta.pem Administrator@ec2-3-239-73-201.compute-1.amazonaws.com "taskkill /F /FI \"COMMANDLINE eq *--ticket 123456789*\" /IM py.exe"
+"""
+trail_my_trade.py — Smart Volume-Adjusted Trailing Stop (MT5 Python)
+
+FEATURES
+→ ATR(14) × volume-scaled multiplier (high volume = wide stop, low volume = tight stop)
+→ Only activates when gross profit > $0.10 (configurable)
+→ Every SL move guarantees real profit after swap + commission
+→ Ratchet-only — SL never moves backwards
+→ Automatically removes any existing SL if conditions are not met
+→ Respects broker minimum stop distance — no more error 10027
+→ Works on all symbols: forex, XAUUSD, crypto, .a accounts
+
+USAGE — EXACT COMMANDS
+
+1. Open PowerShell / CMD on your Windows Server
+2. Run one of these:
+
+   # Interactive mode (recommended) — lists trades, you pick by number or ticket
+   cd C:\Users\Administrator\Desktop
+   py -3.9 trail_my_trade.py
+
+   # Direct mode — instantly trail a specific ticket (example)
+   py -3.9 trail_my_trade.py --ticket 3061442081
+
+   # Direct mode with symbol (if you have multiple same-symbol trades)
+   py -3.9 trail_my_trade.py XAUUSD --ticket 3061442081
+
+CONFIG (top of file)
+    MIN_PROFIT_TO_START  = 0.10    # $ threshold to begin trailing
+    EXTRA_SAFETY_BUFFER  = 1.00    # extra $ to keep after fees
+    BASE_MULTIPLIER      = 3.0
+    VOLUME_SENSITIVITY   = 1.5
+
+KILL specific ticket
+    taskkill /F /FI "COMMANDLINE eq *3061442081*" /IM py.exe
+"""
 
 import MetaTrader5 as mt5
 import pandas as pd
