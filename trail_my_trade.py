@@ -40,7 +40,7 @@ MAX_MULTIPLIER       = 6.0
 CHECK_INTERVAL_SEC   = 5
 MIN_PROFIT_TO_START  = 0.10
 EXTRA_SAFETY_BUFFER  = 1.00      # minimum $ profit we want to lock in
-COMMISSION_PER_LOT   = 6.00      # adjust if your broker charges more/less
+COMMISSION_PER_LOT   = 0     # adjust if your broker charges more/less
 # =========================================================
 
 if not mt5.initialize():
