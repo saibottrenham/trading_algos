@@ -7,10 +7,10 @@ FEATURES
 → Ratchet-only — SL never moves backwards
 → Automatically removes any existing SL if conditions not met
 → Respects broker minimum stop distance — no more error 10027
-→ Logs the exact asset price needed to set a profitable SL
+→ Logs the total $ profit needed to set a profitable SL
 
 USAGE — EXACT COMMANDS
-   cd C:\Users\Administrator\Desktop
+   cd \Users\Administrator\Desktop
    py -3.9 trail_my_trade.py                    # interactive
    py -3.9 trail_my_trade.py --ticket 3061444242
    py -3.9 trail_my_trade.py AUDUSD --ticket 3061444242
@@ -103,7 +103,7 @@ def get_atr(symbol):
     ], axis=1).max(axis=1)
     return tr.rolling(ATR_PERIOD).mean().iloc[-2]
 
-def send_modify(pos, new_sl, digits, mult, profit):
+def send_modify(pos, new_sl, digits, mult, profit_if_hit):
     req = {
         "action": mt5.TRADE_ACTION_SLTP,
         "position": pos.ticket,
@@ -115,12 +115,12 @@ def send_modify(pos, new_sl, digits, mult, profit):
     }
     result = mt5.order_send(req)
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} {'BUY' if pos.type==0 else 'SELL'} | SL → {new_sl:.{digits}f} | ×{mult:.2f} | Profit if hit ≥ ${profit:.2f}")
+        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} {'BUY' if pos.type==0 else 'SELL'} | "
+              f"SL → {new_sl:.{digits}f} | Profit if hit ≥ ${profit_if_hit:.2f}")
     else:
         print(f"Modify failed: {result.retcode} – {result.comment}")
 
-# Global set to remember which tickets have already activated trailing
-_active_tickets = set()
+_sl_set_tickets = set()
 
 def trail_position(pos):
     info = mt5.symbol_info(pos.symbol)
@@ -129,83 +129,58 @@ def trail_position(pos):
 
     gross_profit = pos.profit
     commission_est = abs(pos.volume * pos.price_open * info.trade_tick_value) * 0.0003
-    required_broker_profit = max(0.0, commission_est + EXTRA_SAFETY_BUFFER - pos.swap)
+
+    # The minimum gross profit needed to place a profitable SL
+    min_dist = max(info.trade_stops_level * info.point, 30 * info.point)
+    distance_cost = min_dist * pos.volume * info.trade_contract_size
+    required_gross_profit = distance_cost + commission_est + EXTRA_SAFETY_BUFFER + max(0, -pos.swap)
+
     ticket = pos.ticket
 
-    if ticket not in _active_tickets:
-        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} #{ticket} | "
-              f"Current profit ${gross_profit:+.2f} → Need ≥ ${required_broker_profit:.2f} in broker")
-
-    if gross_profit < required_broker_profit:
+    # Waiting phase — repeat the waiting line every loop
+    if gross_profit < required_gross_profit:
         if pos.sl > 0:
             send_modify(pos, 0, info.digits, 0, 0)
+            print(f"{datetime.now():%H:%M:%S} | {pos.symbol} #{ticket} | Removed existing SL")
+        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} #{ticket} | "
+              f"Waiting — need ≥ ${required_gross_profit:.2f} profit (current ${gross_profit:+.2f})")
         return
 
-    # TRAILING IS NOW ACTIVE
-    if ticket not in _active_tickets:
-        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} #{ticket} | Trailing ACTIVE — forcing first safe SL now")
-        _active_tickets.add(ticket)
+    # Profit is now sufficient — place first safe SL (only once)
+    if ticket not in _sl_set_tickets:
+        if pos.type == mt5.ORDER_TYPE_BUY:
+            new_sl = pos.price_current - min_dist
+        else:
+            new_sl = pos.price_current + min_dist
 
-    min_dist = max(info.trade_stops_level * info.point, 30 * info.point)
-    digits = info.digits
+        profit_if_hit = (abs(new_sl - pos.price_open) * pos.volume * info.trade_contract_size + pos.swap - commission_est) * (1 if pos.type == 0 else 1)
+
+        send_modify(pos, new_sl, info.digits, 0, profit_if_hit)
+        print(f"{datetime.now():%H:%M:%S} | {pos.symbol} {'BUY' if pos.type==0 else 'SELL'} | "
+              f"First safe SL → {new_sl:.{info.digits}f} | Profit if hit ≥ ${profit_if_hit:.2f}")
+        _sl_set_tickets.add(ticket)
+        return
+
+    # Normal trailing — silent, only log real moves
+    vol_ratio = get_volume_ratio(pos.symbol)
+    mult = np.clip(BASE_MULTIPLIER * (vol_ratio ** (1/VOLUME_SENSITIVITY)), MIN_MULTIPLIER, MAX_MULTIPLIER)
+    atr = get_atr(pos.symbol)
 
     if pos.type == mt5.ORDER_TYPE_BUY:
-        # FORCE first safe SL at maximum allowed distance
-        new_sl = pos.price_current - min_dist
-        # Make sure it's still profitable
-        profit_if_hit = (new_sl - pos.price_open) * pos.volume * info.trade_contract_size + pos.swap - commission_est
-        if profit_if_hit < EXTRA_SAFETY_BUFFER:
-            # If even max distance isn't profitable enough, wait for more price movement
-            needed_price = pos.price_open + (commission_est + EXTRA_SAFETY_BUFFER - pos.swap) / (pos.volume * info.trade_contract_size) + min_dist
-            print(f"{datetime.now():%H:%M:%S} | {pos.symbol} | Need price ≥ {needed_price:.{digits}f} for first (current {pos.price_current:.{digits}f})")
-            return
-
-        # Apply ratchet
-        if pos.sl > 0:
-            new_sl = max(new_sl, pos.sl)
-
-        if pos.sl == 0 or new_sl > pos.sl:
-            send_modify(pos, new_sl, digits, 0, profit_if_hit)
-            return  # first SL placed — next loops do normal trailing
-
-        # If we get here, we already have an SL → do normal volume-adjusted trailing
-        vol_ratio = get_volume_ratio(pos.symbol)
-        mult = np.clip(BASE_MULTIPLIER * (vol_ratio ** (1/VOLUME_SENSITIVITY)), MIN_MULTIPLIER, MAX_MULTIPLIER)
-        atr = get_atr(pos.symbol)
         new_sl = pos.price_current - mult * atr
         new_sl = min(new_sl, pos.price_current - min_dist)
         new_sl = max(new_sl, pos.sl)
-
         if new_sl > pos.sl + info.point:
             profit_if_hit = (new_sl - pos.price_open) * pos.volume * info.trade_contract_size + pos.swap - commission_est
-            send_modify(pos, new_sl, digits, mult, profit_if_hit)
+            send_modify(pos, new_sl, info.digits, mult, profit_if_hit)
 
-    else:  # SELL — same logic reversed
-        new_sl = pos.price_current + min_dist
-        profit_if_hit = (pos.price_open - new_sl) * pos.volume * info.trade_contract_size + pos.swap - commission_est
-        if profit_if_hit < EXTRA_SAFETY_BUFFER:
-            needed_price = pos.price_open - (commission_est + EXTRA_SAFETY_BUFFER - pos.swap) / (pos.volume * info.trade_contract_size) - min_dist
-            print(f"{datetime.now():%H:%M:%S} | {pos.symbol} | Need price ≤ {needed_price:.{digits}f} first")
-            return
-
-        if pos.sl > 0:
-            new_sl = min(new_sl, pos.sl)
-
-        if pos.sl == 0 or new_sl < pos.sl:
-            send_modify(pos, new_sl, digits, 0, profit_if_hit)
-            return
-
-        # Normal trailing
-        vol_ratio = get_volume_ratio(pos.symbol)
-        mult = np.clip(BASE_MULTIPLIER * (vol_ratio ** (1/VOLUME_SENSITIVITY)), MIN_MULTIPLIER, MAX_MULTIPLIER)
-        atr = get_atr(pos.symbol)
+    else:  # SELL
         new_sl = pos.price_current + mult * atr
         new_sl = max(new_sl, pos.price_current + min_dist)
         new_sl = min(new_sl, pos.sl)
-
         if new_sl < pos.sl - info.point:
             profit_if_hit = (pos.price_open - new_sl) * pos.volume * info.trade_contract_size + pos.swap - commission_est
-            send_modify(pos, new_sl, digits, mult, profit_if_hit)
+            send_modify(pos, new_sl, info.digits, mult, profit_if_hit)
 
 # ====================== START ======================
 if len(sys.argv) > 1:
