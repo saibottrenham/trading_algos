@@ -1,9 +1,8 @@
 # trading_algos/trail_my_trade.py
 """
 Smart Trailing Engine Runner
-- Interactive engine + position selection
-- NO "python" comment filter when you pick manually
-- Still keeps filter only for auto-mode (safety)
+- NO comment filter by default
+- Optional: --filter-comment  → only trail positions with that text in comment
 """
 
 import sys
@@ -15,9 +14,9 @@ from argparse import ArgumentParser
 from trading_algos.config import CHECK_INTERVAL_SEC
 from trading_algos.core.position import Position
 
-# ── Import all available engines here ─────────────────────────────────────
+# ── Engines ─────────────────────────────────────
 from trading_algos.trailing.volume_atr import VolumeATRTrailing
-# from trading_algos.trailing.fixed_pips import FixedPipsTrailing   # ← add more here TODO
+# from trading_algos.trailing.fixed_pips import FixedPipsTrailing
 
 AVAILABLE_ENGINES = {
     "volume_atr": VolumeATRTrailing,
@@ -25,17 +24,17 @@ AVAILABLE_ENGINES = {
 }
 
 def select_engine():
-    print("\nAVAILABLE TRAILING ENGINES:")
+    print("\nAVAILABLE ENGINES:")
     for i, name in enumerate(AVAILABLE_ENGINES.keys(), 1):
         print(f"  {i}. {name:12} → {'Smart Volume + ATR' if name == 'volume_atr' else name}")
     while True:
-        choice = input(f"\nSelect engine (1-{len(AVAILABLE_ENGINES)} or name) [default: volume_atr]: ").strip()
-        if not choice:
+        c = input(f"\nSelect engine (1-{len(AVAILABLE_ENGINES)} or name) [default: volume_atr]: ").strip()
+        if not c:
             return VolumeATRTrailing()
-        if choice.isdigit() and 1 <= int(choice) <= len(AVAILABLE_ENGINES):
-            return list(AVAILABLE_ENGINES.values())[int(choice)-1]()
-        if choice in AVAILABLE_ENGINES:
-            return AVAILABLE_ENGINES[choice]()
+        if c.isdigit() and 1 <= int(c) <= len(AVAILABLE_ENGINES):
+            return list(AVAILABLE_ENGINES.values())[int(c)-1]()
+        if c in AVAILABLE_ENGINES:
+            return AVAILABLE_ENGINES[c]()
         print("Invalid — try again")
 
 def select_position():
@@ -49,8 +48,9 @@ def select_position():
     for i, p in enumerate(positions, 1):
         t = "BUY" if p.type == 0 else "SELL"
         sl = f"{p.sl:.5f}" if p.sl else "-"
+        comment = getattr(p, "comment", "")[:20]
         print(f"{i:2}. {p.ticket} | {p.symbol:12} | {t:4} | {p.volume:>5} lots | "
-              f"Open {p.price_open:.5f} | SL {sl} | ${p.profit:+.2f}")
+              f"Open {p.price_open:.5f} | SL {sl} | ${p.profit:+.2f} | {comment}")
 
     while True:
         c = input("\nEnter number or ticket: ").strip()
@@ -74,12 +74,14 @@ def main():
     parser.add_argument("symbol", nargs='?', help="Symbol filter")
     parser.add_argument("--ticket", type=int, help="Specific ticket")
     parser.add_argument("--magic", type=int, help="Magic number filter")
+    parser.add_argument("--filter-comment", type=str, default=None,
+                        help="Only trail if comment contains this text (e.g. --filter-comment python)")
     args = parser.parse_args()
 
-    # Interactive mode when no filters given
-    if len(sys.argv) <= 1:
+    manual_mode = len(sys.argv) <= 1
+
+    if manual_mode:
         pos = select_position()
-        manual_mode = True
     else:
         positions = mt5.positions_get(symbol=args.symbol) if args.symbol else mt5.positions_get()
         if not positions:
@@ -89,10 +91,11 @@ def main():
         pos = next((p for p in positions
                     if (not args.ticket or p.ticket == args.ticket)
                     and (not args.magic or p.magic == args.magic)), positions[0])
-        manual_mode = False
 
     print(f"\nENGINE: {engine.__class__.__name__}")
     print(f"Trailing → {pos.symbol} #{pos.ticket} {'BUY' if pos.type==0 else 'SELL'} {pos.volume} lots")
+    if args.filter_comment:
+        print(f"Comment filter active: '{args.filter_comment}'")
     print("Press Ctrl+C to stop\n" + "—" * 70)
 
     try:
@@ -105,9 +108,12 @@ def main():
             p = current[0]
             pos_obj = Position.from_mt5(p)
 
-            # ONLY apply "python" filter in auto-mode — manual selection = always trail
-            if manual_mode or "python" in getattr(p, "comment", "").lower():
-                engine.trail(pos_obj)
+            # Only apply comment filter if --filter-comment was used
+            if args.filter_comment:
+                if args.filter_comment.lower() not in getattr(p, "comment", "").lower():
+                    continue
+
+            engine.trail(pos_obj)
 
             time.sleep(CHECK_INTERVAL_SEC)
     except KeyboardInterrupt:
