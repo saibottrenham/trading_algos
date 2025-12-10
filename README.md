@@ -12,7 +12,6 @@ A **professional-grade, fully modular trailing stop engine** for MT5 — built f
 - Pluggable architecture — swap strategies in one line  
 - 100% unit tested — works on Mac/Linux without MT5  
 - Structured JSON logging  
-- Clean, readable, future-proof code
 
 ---
 ## Features
@@ -60,11 +59,15 @@ Clone the Repo
 ```Bash
 git clone https://github.com/saibottrenham/trading_algos.git
 cd trading_algos
-Install Python DependenciesBashpip install -r requirements.txt
+```
+
+Install Python Dependencies
+
+```Bash
+pip install -r requirements.txt
 ```
 Core deps: MetaTrader5, pandas, numpy
 For testing: `pip install -r requirements-dev.txt (includes pytest, pytest-cov)`
-
 
 Note for Mac/Linux Users:
 You can't run live trailing (no MetaTrader5 package), but you can:
@@ -92,11 +95,11 @@ That’s it — the engine starts immediately and begins trailing all open posit
 
 Optional Filters
 
-Command | Effect
-python -m trading_algos --magic 123456 | Only trail positions with magic number 123456
-python -m trading_algos --ticket 987654 | Trail only this specific ticket
-python -m trading_algos EURUSD | Only trail EURUSD positions (symbol filter)
-python -m trading_algos --magic 999 --ticket 111222 | Combine filters
+| Command | Effect |
+| python -m trading_algos --magic 123456 | Only trail positions with magic number 123456 |
+| python -m trading_algos --ticket 987654 | Trail only this specific ticket |
+| python -m trading_algos EURUSD | Only trail EURUSD positions (symbol filter) |
+| python -m trading_algos --magic 999 --ticket 111222 | Combine filters |
 
 What Happens When Running
 
@@ -235,11 +238,12 @@ Sample log output (real-time in console)
 ```
 
 Event types you’ll see
-Event | Meaning | Typical Use Case
-SL_MODIFY | Stop-loss successfully moved | Normal trailing
-SL_REMOVED_LOW_PROFIT | SL removed because profit fell below threshold | Risk control
-SL_MODIFY_MOCK | Mocked modify (when running on Mac/Linux) | Testing / backtesting
-"SL_MODIFY + ""success"":false" | Broker rejected the request (e.g. too close) | Debugging broker issues
+
+| Event | Meaning | Typical Use Case |
+| SL_MODIFY | Stop-loss successfully moved | Normal trailing |
+| SL_REMOVED_LOW_PROFIT | SL removed because profit fell below threshold | Risk control |
+| SL_MODIFY_MOCK | Mocked modify (when running on Mac/Linux) | Testing / backtesting |
+| "SL_MODIFY + ""success"":false" | Broker rejected the request (e.g. too close) | Debugging broker issues |
 
 Save logs to file (optional)
 Redirect output easily:
