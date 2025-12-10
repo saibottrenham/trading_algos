@@ -1,28 +1,57 @@
+# trading_algos/trailing/volume_atr.py
 from trading_algos.trailing.base import TrailingEngine
 from trading_algos.core.position import Position
 from trading_algos.core.broker import Broker
 from trading_algos.core.logger import log_event
+import numpy as np
+
+# Import config values
 from trading_algos.config import (
     BASE_MULTIPLIER, VOLUME_SENSITIVITY, MIN_MULTIPLIER, MAX_MULTIPLIER,
     MIN_PROFIT_TO_START, EXTRA_SAFETY_BUFFER, COMMISSION_PER_LOT,
     ATR_PERIOD, VOLUME_LOOKBACK
 )
-import numpy as np
+
+# ── SAFE MT5 IMPORT (Mac-friendly) ─────────────────────────────────────
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None  # Tests will mock this
 
 class VolumeATRTrailing(TrailingEngine):
     def __init__(self):
         self.first_sl_set = set()
 
     def _get_volume_ratio(self, symbol: str) -> float:
-        # ... copy your get_volume_ratio logic
-        ...
+        if mt5 is None:
+            return 1.0
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, VOLUME_LOOKBACK + 10)
+        if rates is None or len(rates) < VOLUME_LOOKBACK:
+            return 1.0
+        df = pd.DataFrame(rates)
+        avg = df['tick_volume'].rolling(VOLUME_LOOKBACK).mean().iloc[-2]
+        cur = df['tick_volume'].iloc[-1]
+        return cur / avg if avg > 0 else 1.0
 
     def _get_atr(self, symbol: str) -> float:
-        # ... copy your get_atr logic
-        ...
+        if mt5 is None:
+            info = Broker.get_symbol_info(symbol)
+            return info.point * 150
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, ATR_PERIOD + 20)
+        if rates is None or len(rates) <= ATR_PERIOD:
+            info = Broker.get_symbol_info(symbol)
+            return info.point * 150
+        df = pd.DataFrame(rates)
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - df['close'].shift()).abs(),
+            (df['low'] - df['close'].shift()).abs()
+        ], axis=1).max(axis=1)
+        return tr.rolling(ATR_PERIOD).mean().iloc[-1]
 
     def should_set_initial_sl(self, pos: Position) -> bool:
-        required = max(MIN_PROFIT_TO_START, COMMISSION_PER_LOT * pos.volume + EXTRA_SAFETY_BUFFER - pos.swap)
+        required = max(MIN_PROFIT_TO_START,
+                       COMMISSION_PER_LOT * pos.volume + EXTRA_SAFETY_BUFFER - pos.swap)
         return pos.profit >= required and pos.ticket not in self.first_sl_set
 
     def calculate_initial_sl(self, pos: Position) -> float:
@@ -42,7 +71,11 @@ class VolumeATRTrailing(TrailingEngine):
     def calculate_next_sl(self, pos: Position) -> float:
         info = Broker.get_symbol_info(pos.symbol)
         vol_ratio = self._get_volume_ratio(pos.symbol)
-        mult = np.clip(BASE_MULTIPLIER * (vol_ratio ** (1 / VOLUME_SENSITIVITY)), MIN_MULTIPLIER, MAX_MULTIPLIER)
+        if vol_ratio <= 0:
+            vol_ratio = 1.0
+
+        mult = np.clip(BASE_MULTIPLIER * (vol_ratio ** (1 / VOLUME_SENSITIVITY)),
+                       MIN_MULTIPLIER, MAX_MULTIPLIER)
         atr = self._get_atr(pos.symbol)
 
         if pos.is_buy:
@@ -57,17 +90,36 @@ class VolumeATRTrailing(TrailingEngine):
         return round(new_sl, info.digits)
 
     def trail(self, pos: Position) -> None:
+        info = Broker.get_symbol_info(pos.symbol)
+
         if pos.profit < MIN_PROFIT_TO_START and pos.sl != 0.0:
-            Broker.modify_sl(pos.ticket, pos.symbol, 0.0, pos.tp, Broker.get_symbol_info(pos.symbol).digits)
+            Broker.modify_sl(pos.ticket, pos.symbol, 0.0, pos.tp, info.digits)
             log_event("SL_REMOVED_LOW_PROFIT", ticket=pos.ticket, profit=pos.profit)
             return
 
         if self.should_set_initial_sl(pos):
             sl = self.calculate_initial_sl(pos)
-            if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, Broker.get_symbol_info(pos.symbol).digits):
-                self.first_sl_set.add(pos.ticket)
+            actual_locked = profit_if_sl_hit(pos, sl)
+            if actual_locked >= 0.01:
+                if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
+                    self.first_sl_set.add(pos.ticket)
+                    log_event("FIRST_SL_SET", ticket=pos.ticket, sl=sl, locked_profit=actual_locked)
+            return
 
-        elif pos.sl != 0.0:
+        if pos.sl != 0.0:
             new_sl = self.calculate_next_sl(pos)
-            if (pos.is_buy and new_sl > pos.sl + 0.00001) or (not pos.is_buy and new_sl < pos.sl - 0.00001):
-                Broker.modify_sl(pos.ticket, pos.symbol, new_sl, pos.tp, Broker.get_symbol_info(pos.symbol).digits)
+            if (pos.is_buy and new_sl > pos.sl + info.point) or \
+               (not pos.is_buy and new_sl < pos.sl - info.point):
+                Broker.modify_sl(pos.ticket, pos.symbol, new_sl, pos.tp, info.digits)
+                log_event("SL_TRAILED", ticket=pos.ticket, sl=new_sl)
+
+def profit_if_sl_hit(pos: Position, sl_price: float) -> float:
+    info = Broker.get_symbol_info(pos.symbol)
+    if sl_price == 0:
+        return 0.0
+    diff = (sl_price - pos.price_open) if pos.is_buy else (pos.price_open - sl_price)
+    gross = diff * pos.volume * info.trade_contract_size
+    return gross + pos.swap - (COMMISSION_PER_LOT * pos.volume)
+
+# Required for pandas
+import pandas as pd
