@@ -5,14 +5,18 @@ import pandas as pd
 @pytest.fixture
 def sample_rates():
     np.random.seed(42)
-    n = 100
+    n = 50
     base = 1.1000
     price = base + np.cumsum(np.random.randn(n) * 0.0002)
-    return pd.DataFrame({
-        'time': pd.date_range("2025-01-01", periods=n, freq="5min"),
+    df = pd.DataFrame({
+        'time': pd.date_range("2025-01-01", periods=n, freq="5min").view('i8') // 10**9,  # Unix timestamp in seconds
         'open': price * (1 + np.random.randn(n)*0.00005),
         'high': price + abs(np.random.randn(n)*0.00015),
         'low': price - abs(np.random.randn(n)*0.00015),
         'close': price,
         'tick_volume': np.random.randint(800, 5000, n),
+        'spread': np.full(n, 10, dtype=np.int32),
+        'real_volume': np.zeros(n, dtype=np.int64),
     })
+    # Exact MT5 dtype (8 fields)
+    return df.to_records(index=False)

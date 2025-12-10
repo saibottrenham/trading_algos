@@ -23,7 +23,50 @@ CONFIG (top of file)
     VOLUME_SENSITIVITY   = 1.5
 """
 
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+    _MT5_AVAILABLE = True
+except ImportError:  # Running on Mac / CI
+    _MT5_AVAILABLE = False
+    # Create a dummy mt5 object with the constants we use
+    class _DummyMT5:
+        TIMEFRAME_M5 = 5
+        ORDER_TYPE_BUY = 0
+        ORDER_TYPE_SELL = 1
+        ORDER_TIME_GTC = 0
+        ORDER_FILLING_IOC = 2
+        TRADE_ACTION_SLTP = 6
+        TRADE_RETCODE_DONE = 10009
+
+        @staticmethod
+        def initialize():
+            return True
+
+        @staticmethod
+        def shutdown():
+            pass
+
+        @staticmethod
+        def symbol_info(symbol):
+            # Return a realistic mock
+            from types import SimpleNamespace
+            info = SimpleNamespace()
+            info.digits = 5
+            info.point = 0.00001
+            info.trade_contract_size = 100000
+            info.trade_stops_level = 10
+            return info
+
+        @staticmethod
+        def copy_rates_from_pos(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def positions_get(*args, **kwargs):
+            return []
+
+    mt5 = _DummyMT5()
+
 import pandas as pd
 import numpy as np
 import time
