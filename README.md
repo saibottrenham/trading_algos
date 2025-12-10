@@ -96,6 +96,7 @@ That’s it — the engine starts immediately and begins trailing all open posit
 Optional Filters
 
 | Command | Effect |
+| :---:   | :---: | 
 | python -m trading_algos --magic 123456 | Only trail positions with magic number 123456 |
 | python -m trading_algos --ticket 987654 | Trail only this specific ticket |
 | python -m trading_algos EURUSD | Only trail EURUSD positions (symbol filter) |
@@ -240,6 +241,7 @@ Sample log output (real-time in console)
 Event types you’ll see
 
 | Event | Meaning | Typical Use Case |
+| :---:   | :---: | :---: |
 | SL_MODIFY | Stop-loss successfully moved | Normal trailing |
 | SL_REMOVED_LOW_PROFIT | SL removed because profit fell below threshold | Risk control |
 | SL_MODIFY_MOCK | Mocked modify (when running on Mac/Linux) | Testing / backtesting |
