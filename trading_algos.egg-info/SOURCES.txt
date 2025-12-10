@@ -1,0 +1,12 @@
+pyproject.toml
+tests/__init__.py
+tests/conftest.py
+tests/test_trail_my_trade.py
+trading_algos/__init__.py
+trading_algos/__main__.py
+trading_algos/trail_my_trade.py
+trading_algos.egg-info/PKG-INFO
+trading_algos.egg-info/SOURCES.txt
+trading_algos.egg-info/dependency_links.txt
+trading_algos.egg-info/requires.txt
+trading_algos.egg-info/top_level.txt

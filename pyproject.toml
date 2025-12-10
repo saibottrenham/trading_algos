@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading_algos"
+version = "0.1.0"
+dependencies = [
+    "pandas",
+    "numpy",
+    "MetaTrader5; platform_system == 'Windows'",   # only try to install on Windows
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+where = ["."]

@@ -1,0 +1,9 @@
+pandas
+numpy
+
+[:platform_system == "Windows"]
+MetaTrader5
+
+[dev]
+pytest
+pytest-cov

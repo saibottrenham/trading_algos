@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: trading_algos
+Version: 0.1.0
+Requires-Dist: pandas
+Requires-Dist: numpy
+Requires-Dist: MetaTrader5; platform_system == "Windows"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"

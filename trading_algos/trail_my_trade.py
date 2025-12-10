@@ -206,34 +206,85 @@ def select_position():
         print("Invalid input")
 
 # CLI or interactive
-if len(sys.argv) > 1:
-    from argparse import ArgumentParser
-    parser = ArgumentParser()
-    parser.add_argument("symbol", nargs='?', default=None)
-    parser.add_argument("--ticket", type=int)
-    parser.add_argument("--magic", type=int)
-    args = parser.parse_args()
-    positions = mt5.positions_get(symbol=args.symbol) if args.symbol else mt5.positions_get()
-    pos = next((p for p in positions if args.ticket and p.ticket == args.ticket or args.magic and p.magic == args.magic), positions[0] if positions else None)
-else:
-    pos = select_position()
+def _run_trailing():
+    # Original interactive selector
+    def select_position():
+        positions = mt5.positions_get()
+        if not positions:
+            print("No open positions")
+            mt5.shutdown()
+            sys.exit(0)
 
-if not pos:
-    mt5.shutdown()
-    sys.exit()
+        print("\nOPEN POSITIONS:")
+        for i, p in enumerate(positions, 1):
+            t = "BUY" if p.type == 0 else "SELL"
+            sl = f"{p.sl:.5f}" if p.sl > 0 else "-"
+            print(f"{i:2}. {p.ticket} | {p.symbol:12} | {t:4} | {p.volume:>5} lots | "
+                  f"Open {p.price_open:.5f} | SL {sl} | ${p.profit:+.2f}")
 
-print(f"\nTrailing started → {pos.symbol} #{pos.ticket} {'BUY' if pos.type==0 else 'SELL'} {pos.volume} lots")
-print("Press Ctrl+C to stop\n" + "—" * 70)
+        while True:
+            c = input("\nEnter number or ticket: ").strip()
+            if c.isdigit():
+                n = int(c)
+                if 1 <= n <= len(positions):
+                    return positions[n-1]
+                # allow direct ticket entry
+                if len(c) >= 7:
+                    for p in positions:
+                        if p.ticket == n:
+                            return p
+            print("Invalid input")
 
-try:
-    while True:
-        cur = mt5.positions_get(ticket=pos.ticket)
-        if not cur:
-            print(f"[{datetime.now():%H:%M:%S}] Position closed")
-            break
-        trail_position(cur[0])
-        time.sleep(CHECK_INTERVAL_SEC)
-except KeyboardInterrupt:
-    print("\nStopped by user")
-finally:
-    mt5.shutdown()
+    # CLI arguments
+    if len(sys.argv) > 1:
+        from argparse import ArgumentParser
+        parser = ArgumentParser()
+        parser.add_argument("symbol", nargs='?', default=None)
+        parser.add_argument("--ticket", type=int)
+        parser.add_argument("--magic", type=int)
+        args = parser.parse_args()
+
+        positions = (mt5.positions_get(symbol=args.symbol)
+                     if args.symbol else mt5.positions_get())
+        if not positions:
+            print("No positions found matching criteria")
+            mt5.shutdown()
+            sys.exit(1)
+
+        pos = None
+        for p in positions:
+            if (args.ticket and p.ticket == args.ticket) or \
+               (args.magic and p.magic == args.magic):
+                pos = p
+                break
+        if not pos:
+            pos = positions[0]  # fallback to first
+
+    else:
+        pos = select_position()
+
+    if not pos:
+        mt5.shutdown()
+        sys.exit(1)
+
+    print(f"\nTrailing started → {pos.symbol} #{pos.ticket} "
+          f"{'BUY' if pos.type==0 else 'SELL'} {pos.volume} lots")
+    print("Press Ctrl+C to stop\n" + "—" * 70)
+
+    try:
+        while True:
+            cur = mt5.positions_get(ticket=pos.ticket)
+            if not cur:
+                print(f"[{datetime.now():%H:%M:%S}] Position closed")
+                break
+            trail_position(cur[0])
+            time.sleep(CHECK_INTERVAL_SEC)
+    except KeyboardInterrupt:
+        print("\nStopped by user")
+    finally:
+        mt5.shutdown()
+
+
+# ←←← ONLY run when executed directly (not when imported by pytest)
+if __name__ == "__main__":
+    _run_trailing()
