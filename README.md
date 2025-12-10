@@ -65,9 +65,20 @@ Install Python Dependencies
 
 ```Bash
 pip install -r requirements.txt
+
+# or 
+
+py -3.9 -m pip install --upgrade pip
+py -3.9 -m pip install -r requirements.txt
 ```
 Core deps: MetaTrader5, pandas, numpy
-For testing: `pip install -r requirements-dev.txt (includes pytest, pytest-cov)`
+For testing: 
+
+```bash
+pip install -r requirements-dev.txt # (includes pytest, pytest-cov)
+# or 
+py -3.9 -m pip install -r requirements-dev.txt
+```
 
 Note for Mac/Linux Users:
 You can't run live trailing (no MetaTrader5 package), but you can:
@@ -76,7 +87,14 @@ Backtest with vectorbt (coming soon)
 Use the pluggable engine for non-MT5 strategies
 
 Verify Installation
-Run `python -m trading_algos` — it should print:
+Run 
+```bash
+python -m trading_algos
+# or 
+py -3.9 -m trading_algos
+```
+
+it should print:
 ```text
 Smart trailing engine started — Volume + ATR + Profit Lock
 ```
@@ -89,6 +107,8 @@ Failed to initialize MT5
 ## Run Live Trailing (Windows only)
 ```bash
 python -m trading_algos
+# or 
+py -3.9 -m trading_algos
 ```
 
 That’s it — the engine starts immediately and begins trailing all open positions that have "python" in the comment field.
@@ -125,9 +145,13 @@ You can run the full test suite on any operating system — no MetaTrader 5 requ
 ```bash
 # Install test dependencies (once)
 pip install -r requirements-dev.txt
+# or 
+py -3.9 -m pip install -r requirements-dev.txt
 
 # Run tests with detailed output + coverage
 pytest tests/ -v --cov=trading_algos --cov-report=term-missing
+# or 
+py -3.9 -m pytest tests/ -v --cov=trading_algos --cov-report=term-missing
 ```
 
 ```text
