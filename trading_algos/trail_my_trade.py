@@ -17,12 +17,12 @@ from trading_algos.core.position import Position
 
 # ── Import all available engines here ─────────────────────────────────────
 from trading_algos.trailing.volume_atr import VolumeATRTrailing
-from trading_algos.trailing.fixed_pips import FixedPipsTrailing   # ← add more here
+# from trading_algos.trailing.fixed_pips import FixedPipsTrailing   # ← add more here TODO
 
 # Map name → engine class
 AVAILABLE_ENGINES = {
     "volume_atr": VolumeATRTrailing,
-    "fixed_pips": FixedPipsTrailing,
+    # "fixed_pips": FixedPipsTrailing,
     # "chandelier": ChandelierTrailing,
     # "psar": PSARTrailing,
 }
