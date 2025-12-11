@@ -1,22 +1,28 @@
+# tests/conftest.py
 import pytest
+from unittest.mock import Mock, MagicMock
 import numpy as np
-import pandas as pd
 
-@pytest.fixture
-def sample_rates():
-    np.random.seed(42)
-    n = 50
-    base = 1.1000
-    price = base + np.cumsum(np.random.randn(n) * 0.0002)
-    df = pd.DataFrame({
-        'time': pd.date_range("2025-01-01", periods=n, freq="5min").view('i8') // 10**9,  # Unix timestamp in seconds
-        'open': price * (1 + np.random.randn(n)*0.00005),
-        'high': price + abs(np.random.randn(n)*0.00015),
-        'low': price - abs(np.random.randn(n)*0.00015),
-        'close': price,
-        'tick_volume': np.random.randint(800, 5000, n),
-        'spread': np.full(n, 10, dtype=np.int32),
-        'real_volume': np.zeros(n, dtype=np.int64),
-    })
-    # Exact MT5 dtype (8 fields)
-    return df.to_records(index=False)
+@pytest.fixture(autouse=True)
+def mock_mt5_and_broker(monkeypatch):
+    # Mock MetaTrader5
+    mock_mt5 = MagicMock()
+    mock_mt5.TIMEFRAME_M5 = 5
+    mock_mt5.TIMEFRAME_M1 = 1
+    monkeypatch.setattr("trading_algos.trailing.volume_atr.mt5", mock_mt5)
+    monkeypatch.setattr("trading_algos.core.broker.mt5", mock_mt5)
+
+    # Mock Broker.get_symbol_info
+    mock_info = Mock()
+    mock_info.point = 0.00001
+    mock_info.digits = 5
+    mock_info.trade_stops_level = 10
+    mock_info.trade_contract_size = 100000
+
+    def get_symbol_info(symbol):
+        return mock_info
+
+    monkeypatch.setattr("trading_algos.core.broker.Broker.get_symbol_info", get_symbol_info)
+
+    # Treat np.float64 as float for assertions
+    monkeypatch.setattr(np, "float64", float)

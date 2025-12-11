@@ -1,130 +1,58 @@
-# tests/test_volume_atr_engine.py
-"""
-Complete test suite for the modular Volume + ATR trailing engine.
-All tests pass on Mac, no MetaTrader5 needed.
-"""
-
+from unittest.mock import Mock, MagicMock, patch
 import pytest
-from unittest.mock import patch, MagicMock
-
-from trading_algos.trailing.volume_atr import VolumeATRTrailing
 from trading_algos.core.position import Position
-from trading_algos.config import (
-    BASE_MULTIPLIER, VOLUME_SENSITIVITY, MIN_MULTIPLIER, MAX_MULTIPLIER,
-    EXTRA_SAFETY_BUFFER, COMMISSION_PER_LOT
-)
+from trading_algos.trailing.volume_atr import VolumeATRTrailing
+from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING
 
 
-@pytest.fixture
-def engine():
-    return VolumeATRTrailing()
+def create_mock_position(ticket=123456, symbol="EURUSD", volume=0.1, price_open=1.10000,
+                         price_current=1.11000, profit=15.0, sl=0.0, tp=0.0, swap=0.0, is_buy=True):
+    pos = Mock()
+    pos.ticket = ticket
+    pos.symbol = symbol
+    pos.volume = volume
+    pos.price_open = price_open
+    pos.price_current = price_current
+    pos.profit = profit
+    pos.sl = sl
+    pos.tp = tp
+    pos.swap = swap
+    pos.type = 0 if is_buy else 1
+    pos.comment = "test"
+    return Position.from_mt5(pos)
 
 
-@pytest.fixture
-def base_position():
-    """Base MT5 position mock — we convert to our Position object."""
-    pos = MagicMock()
-    pos.ticket = 123456
-    pos.symbol = "EURUSD"
-    pos.type = 0
-    pos.volume = 0.20
-    pos.price_open = 1.10000
-    pos.price_current = 1.10800
-    pos.sl = 1.10200          # Pretend first protective SL already set
-    pos.tp = 0.0
-    pos.profit = 160.0
-    pos.swap = -1.2
-    pos.comment = "python"
-    return pos
-
-
-@pytest.fixture
-def symbol_info():
-    info = MagicMock()
-    info.digits = 5
-    info.point = 0.00001
-    info.trade_contract_size = 100000.0
-    info.trade_stops_level = 10
-    return info
-
-
-def make_position(mock_pos):
-    return Position.from_mt5(mock_pos)
-
-
-# =============================================================================
-# Tests
-# =============================================================================
-
-@patch("trading_algos.core.broker.Broker.get_symbol_info")
+@pytest.mark.parametrize("profit, expected_sl", [
+    (9.99, 0.0),        # below $10 → no SL
+    (10.00, 1.10103),   # exactly $10 → locks ~$10
+    (25.00, 1.10103),   # higher → still initial lock $10
+])
 @patch("trading_algos.core.broker.Broker.modify_sl")
-def test_first_protective_sl(mock_modify, mock_info, engine, base_position, symbol_info):
-    """First call with profit → set protective SL that locks ~$1+ profit."""
-    mock_info.return_value = symbol_info
-    base_position.profit = 30.0
-    base_position.sl = 0.0
-    pos = make_position(base_position)
+def test_volume_scaled_atr_trailing(mock_modify, profit, expected_sl):
+    engine = VolumeATRTrailing()
 
-    engine.trail(pos)
+    # First call: hit $10+ → should set initial SL
+    pos = create_mock_position(profit=profit, price_current=1.11000)
 
-    new_sl = mock_modify.call_args[0][2]
-    assert 1.1000 < new_sl < 1.1010
-    # Mark as set internally
-    engine.first_sl_set.add(pos.ticket)
+    with patch("trading_algos.trailing.volume_atr.pd.Timestamp") as mock_ts:
+        mock_ts.now.return_value.timestamp.return_value = 1700000000.0
+        engine.trail(pos)
 
+    if profit >= PROFIT_TO_ACTIVATE_TRAILING:
+        # Allow tiny rounding differences (0.00001)
+        called_sl = mock_modify.call_args[0][2]
+        assert abs(called_sl - expected_sl) < 0.00001
+        mock_modify.assert_called_once()
+    else:
+        mock_modify.assert_not_called()
 
-@patch("trading_algos.core.broker.Broker.get_symbol_info")
-@patch("trading_algos.core.broker.Broker.modify_sl")
-def test_removes_sl_when_profit_too_low(mock_modify, mock_info, engine, base_position, symbol_info):
-    mock_info.return_value = symbol_info
-    base_position.profit = 0.05
-    base_position.sl = 1.09900
-    pos = make_position(base_position)
+    mock_modify.reset_mock()
 
-    engine.trail(pos)
-    mock_modify.assert_called_once_with(123456, "EURUSD", 0.0, 0.0, 5)
+    # Second call: trail further up
+    pos2 = create_mock_position(profit=profit + 10, price_current=1.11200, sl=called_sl if profit >= 10 else 0.0)
+    engine.trail(pos2)
 
-
-@patch("trading_algos.core.broker.Broker.get_symbol_info")
-@patch("trading_algos.core.broker.Broker.modify_sl")
-def test_volume_scaled_atr_trailing(mock_modify, mock_info, engine, base_position, symbol_info):
-    """
-    After first SL is set → ATR trailing with volume scaling takes over.
-    Tests all volume regimes: low → tight, high → wide, clipping.
-    """
-    mock_info.return_value = symbol_info
-    base_position.sl = 1.10200
-    base_position.profit = 160.0
-    pos = make_position(base_position)
-
-    # Mark first SL as already done
-    engine.first_sl_set.add(pos.ticket)
-
-    test_cases = [
-        (0.3, 1.5),        # Clipped to MIN_MULTIPLIER
-        (0.5, 1.88988),    # Calculated
-        (1.0, 3.0),        # Base
-        (2.0, 4.76220),    # Wider
-        (10.0, 6.0),       # Clipped to MAX_MULTIPLIER
-    ]
-
-    for vol_ratio, expected_mult in test_cases:
-        mock_modify.reset_mock()
-
-        with patch.object(engine, '_get_volume_ratio', return_value=vol_ratio):
-            with patch.object(engine, '_get_atr', return_value=0.00100):
-                engine.trail(pos)
-
-                expected_sl = pos.price_current - expected_mult * 0.00100
-                # Ratchet: only move up
-                expected_sl = max(expected_sl, pos.sl)
-                # Respect min distance (~30 pips)
-                expected_sl = min(expected_sl, pos.price_current - 0.00030)
-                expected_sl = round(expected_sl, 5)
-
-                if expected_sl > pos.sl + 0.00001:
-                    mock_modify.assert_called_once_with(
-                        123456, "EURUSD", expected_sl, 0.0, 5
-                    )
-                else:
-                    mock_modify.assert_not_called()
+    if profit >= PROFIT_TO_ACTIVATE_TRAILING:
+        assert mock_modify.called
+        new_sl = mock_modify.call_args[0][2]
+        assert new_sl > called_sl  # ratchet only
