@@ -114,30 +114,16 @@ class VolumeATRTrailing(TrailingEngine):
             log_event("REMOVED_FOREIGN_SL", ticket=pos.ticket, old_sl=pos.sl)
             return
 
-        # ───── NEW: Log the exact price needed to hit activation if below ─────
-        if pos.profit < PROFIT_TO_ACTIVATE_TRAILING:
-            contract = pos.volume * info.trade_contract_size
-            commission = COMMISSION_PER_LOT * pos.volume
-            dollars_short = PROFIT_TO_ACTIVATE_TRAILING - pos.profit
-            if pos.is_buy:
-                price_needed = pos.price_current + (dollars_short + commission - pos.swap) / contract
-            else:
-                price_needed = pos.price_current - (dollars_short + commission - pos.swap) / contract
-            price_needed = round(price_needed, info.digits)
-            pips_needed = abs(pos.price_current - price_needed) / info.point
-            log_event("PRICE_TO_ACTIVATE_SL", ticket=pos.ticket, dollars_short=round(dollars_short, 2), pips_needed=round(pips_needed), price_needed=price_needed)
-            return
-
         # 2. First time we hit +$1 → lock exactly $1
         if self.should_set_initial_sl(pos):
             sl = self.calculate_initial_sl(pos)
             locked = self.profit_if_sl_hit(pos, sl)
-            if locked < PROFIT_TO_ACTIVATE_TRAILING * 0.99:  # Dynamic tolerance – was hard-coded 9.0
+            if locked < PROFIT_TO_ACTIVATE_TRAILING * 0.99:  # Dynamic tolerance
                 log_event("BLOCKED_BAD_SL", ticket=pos.ticket, would_lock=round(locked, 2), profit=round(pos.profit, 2))
                 return
             if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
                 self.first_sl_set.add(pos.ticket)
-                log_event("FIRST_SL_SET_1USD", ticket=pos.ticket, sl=sl, locked=round(locked,2))
+                log_event(f"FIRST_SL_SET", ticket=pos.ticket, sl=sl, locked=round(locked,2))
             return
 
         # 3. Once we own the SL → ratchet only, never remove, never move back
@@ -149,6 +135,11 @@ class VolumeATRTrailing(TrailingEngine):
             if should_move:
                 Broker.modify_sl(pos.ticket, pos.symbol, new_sl, pos.tp, info.digits)
                 log_event("SL_TRAILED", ticket=pos.ticket, sl=new_sl, profit=round(pos.profit,2))
+            return
+
+        # Simple monitoring if below activation
+        needed_profit = PROFIT_TO_ACTIVATE_TRAILING - pos.profit
+        log_event("POSITION_MONITOR", ticket=pos.ticket, current_profit=round(pos.profit, 2), needed_profit=round(needed_profit, 2))
 
     def profit_if_sl_hit(self, pos: Position, sl_price: float) -> float:
         if sl_price == 0: return 0.0

@@ -3,9 +3,8 @@ import time
 from datetime import datetime
 import MetaTrader5 as mt5
 from argparse import ArgumentParser
-from trading_algos.config import CHECK_INTERVAL_SEC, PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT
+from trading_algos.config import CHECK_INTERVAL_SEC
 from trading_algos.core.position import Position
-from trading_algos.core.broker import Broker
 # Engines
 from trading_algos.trailing.volume_atr import VolumeATRTrailing
 AVAILABLE_ENGINES = {
@@ -93,7 +92,7 @@ def main():
     for pos in positions:
         direction = "BUY" if pos.type == 0 else "SELL"
         print(f"  → #{pos.ticket} {pos.symbol} | {direction} {pos.volume} lots | Comment: {getattr(pos, 'comment', 'N/A')}")
-    print("LOGS BELOW — EVERY 5 SECONDS\n" + "—" * 80)
+    print(f"LOGS BELOW — EVERY {CHECK_INTERVAL_SEC} SECONDS\n" + "—" * 80)
 
     active_tickets = {pos.ticket for pos in positions}
     try:
@@ -106,35 +105,10 @@ def main():
             for ticket in list(active_tickets):
                 cur_pos_data = mt5.positions_get(ticket=ticket)
                 if not cur_pos_data:
-                    print(f"[{now}] Position #{ticket} closed — removing from watch")
                     active_tickets.discard(ticket)
                     continue
                 p = cur_pos_data[0]
                 pos_obj = Position.from_mt5(p)
-                direction = "BUY" if p.type == 0 else "SELL"
-                sl_status = f"{p.sl:.5f}" if p.sl else "None"
-
-                info = Broker.get_symbol_info(p.symbol)
-                contract = p.volume * info.trade_contract_size
-                comm_cost = COMMISSION_PER_LOT * p.volume
-
-                if p.profit < PROFIT_TO_ACTIVATE_TRAILING:
-                    dollars_short = PROFIT_TO_ACTIVATE_TRAILING - p.profit
-                    if p.type == 0:  # BUY
-                        price_needed = p.price_open + (dollars_short + comm_cost - p.swap) / contract
-                    else:  # SELL
-                        price_needed = p.price_open - (dollars_short + comm_cost - p.swap) / contract
-                    price_needed = round(price_needed, info.digits)
-                    pips_needed = abs(p.price_current - price_needed) / info.point
-
-                    print(f"[{now}] #{p.ticket} | {p.symbol} | {direction} | "
-                          f"Price: {p.price_current:.5f} | P/L: ${p.profit:+.2f} | SL: {sl_status}")
-                    print(f"           → Need +${dollars_short:.2f} more "
-                          f"(≈ {pips_needed:.0f} pips) → SL will lock at {price_needed}")
-                else:
-                    print(f"[{now}] #{p.ticket} | {p.symbol} | {direction} | "
-                          f"Price: {p.price_current:.5f} | P/L: ${p.profit:+.2f} | SL: {sl_status} ← LOCKED & TRAILING")
-
                 engine.trail(pos_obj)
 
             # Dynamic add new in 'all' mode (CLI or interactive all)
@@ -143,14 +117,12 @@ def main():
                 for new_ticket in new_tickets:
                     new_pos_data = mt5.positions_get(ticket=new_ticket)
                     if new_pos_data:
-                        print(f"[{now}] New position detected: #{new_ticket}")
                         new_p = new_pos_data[0]
                         new_pos_obj = Position.from_mt5(new_p)
                         engine.trail(new_pos_obj)
                         active_tickets.add(new_ticket)
 
             if not active_tickets:
-                print(f"[{now}] No active positions left — exiting.")
                 break
 
             time.sleep(CHECK_INTERVAL_SEC)
