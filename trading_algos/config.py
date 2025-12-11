@@ -1,23 +1,18 @@
 # trading_algos/config.py
-"""
-Central configuration for the trailing engine.
-Easy to tweak, no circular imports.
-"""
+"""Ultra-clean config – only what we actually use now"""
 
-# Trailing logic
-BASE_MULTIPLIER = 3.0
-VOLUME_SENSITIVITY = 1.5
-MIN_MULTIPLIER = 1.5
-MAX_MULTIPLIER = 6.0
+CHECK_INTERVAL_SEC = 2                  # Poll fast for spikes
 
-# Profit & safety
-MIN_PROFIT_TO_START = 0.10
-EXTRA_SAFETY_BUFFER = 1.00
-COMMISSION_PER_LOT = 0.0
+# ONE AND ONLY PROFIT RULE
+PROFIT_TO_ACTIVATE_TRAILING = 10.0      # Wait for +$10 before doing ANYTHING
 
-# Data lookbacks
+# Broker costs
+COMMISSION_PER_LOT = 3.0                # Your round-turn commission per lot
+
+# Volume-ATR aggression (tuned for 2-3 min spikes)
+BASE_MULTIPLIER = 2.0
+VOLUME_SENSITIVITY = 2.0
+MIN_MULTIPLIER = 1.0
+MAX_MULTIPLIER = 4.0
 ATR_PERIOD = 14
-VOLUME_LOOKBACK = 20
-
-# Runtime
-CHECK_INTERVAL_SEC = 5
+VOLUME_LOOKBACK = 14
