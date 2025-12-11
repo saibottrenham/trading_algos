@@ -4,10 +4,10 @@
 CHECK_INTERVAL_SEC = 2                  # Poll fast for spikes
 
 # ONE AND ONLY PROFIT RULE
-PROFIT_TO_ACTIVATE_TRAILING = 10.0      # Wait for +$10 before doing ANYTHING
+PROFIT_TO_ACTIVATE_TRAILING = 1.0      # Wait for +$10 before doing ANYTHING
 
 # Broker costs
-COMMISSION_PER_LOT = 3.0                # Your round-turn commission per lot
+COMMISSION_PER_LOT = 0                # Your round-turn commission per lot
 
 # Volume-ATR aggression (tuned for 2-3 min spikes)
 BASE_MULTIPLIER = 2.0
