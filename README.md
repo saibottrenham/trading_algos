@@ -145,6 +145,7 @@ You can run the full test suite on any operating system — no MetaTrader 5 requ
 ```bash
 # Install test dependencies (once)
 pip install -r requirements-dev.txt
+pip install -r requirements-dev.txt && black . && isort . && pytest --cov
 # or 
 py -3.9 -m pip install -r requirements-dev.txt
 
