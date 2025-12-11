@@ -10,7 +10,6 @@ from trading_algos.config import (
     ATR_PERIOD, VOLUME_LOOKBACK
 )
 
-# Safe MT5 import
 try:
     import MetaTrader5 as mt5
     _MT5_AVAILABLE = True
@@ -21,9 +20,9 @@ except ImportError:
 
 class VolumeATRTrailing(TrailingEngine):
     def __init__(self):
-        self.first_sl_set = set()              # We set this SL
-        self.cleaned_preexisting_sl = set()    # We removed someone else's SL
-        self.last_profit = {}                  # ← THIS WAS MISSING ON WINDOWS!
+        self.first_sl_set = set()          # Tickets where WE set the first SL
+        self.cleaned_preexisting_sl = set()  # Tickets where we removed someone else's SL
+        self.last_profit = {}              # Per-ticket profit velocity tracking
 
     # ── Helpers ─────────────────────
     def _get_volume_ratio(self, symbol: str) -> float:
@@ -37,13 +36,12 @@ class VolumeATRTrailing(TrailingEngine):
 
     def _get_atr(self, symbol: str, timeframe=None, period=None) -> float:
         if timeframe is None:
-            timeframe = mt5.TIMEFRAME_M5 if _MT5_AVAILABLE else None
+            timeframe = mt5.TIMEFRAME_M5 if _MT5_AVAILABLE else 1
         if period is None:
             period = ATR_PERIOD
         if not _MT5_AVAILABLE:
             info = Broker.get_symbol_info(symbol)
             return info.point * 150
-
         rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, period + 20)
         if rates is None or len(rates) <= period:
             info = Broker.get_symbol_info(symbol)
@@ -58,7 +56,6 @@ class VolumeATRTrailing(TrailingEngine):
 
     # ── Core logic ─────────────────────────────
     def should_set_initial_sl(self, pos: Position) -> bool:
-        # CRITICAL: Only activate when profit is actually ≥ $10
         return pos.profit >= PROFIT_TO_ACTIVATE_TRAILING and pos.ticket not in self.first_sl_set
 
     def calculate_initial_sl(self, pos: Position) -> float:
@@ -83,19 +80,16 @@ class VolumeATRTrailing(TrailingEngine):
         mult = np.clip(BASE_MULTIPLIER * (vol_ratio ** (1 / VOLUME_SENSITIVITY)),
                        MIN_MULTIPLIER, MAX_MULTIPLIER)
 
-        # Velocity aggression (safe now)
+        # Optional velocity boost on crazy spikes
         now = pd.Timestamp.now().timestamp()
-        prev_profit, prev_time = self.last_profit.get(pos.ticket, (pos.profit, now))
-        delta_time = max(now - prev_time, 0.1)
-        velocity = (pos.profit - prev_profit) / (delta_time / 60)
+        prev = self.last_profit.get(pos.ticket, (pos.profit, now))
+        velocity = (pos.profit - prev[0]) / max((now - prev[1]) / 60, 0.1)
         if velocity > 6.0:
             mult *= max(0.7, 1 - velocity/60)
         self.last_profit[pos.ticket] = (pos.profit, now)
 
-        # Hybrid ATR
-        atr_m5 = self._get_atr(pos.symbol, mt5.TIMEFRAME_M5 if _MT5_AVAILABLE else None)
-        atr_m1 = self._get_atr(pos.symbol, mt5.TIMEFRAME_M1 if _MT5_AVAILABLE else None, max(ATR_PERIOD//3, 5))
-        atr = 0.7 * atr_m5 + 0.3 * atr_m1
+        atr = 0.7 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M5 if _MT5_AVAILABLE else 1) + \
+              0.3 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M1 if _MT5_AVAILABLE else 1, max(ATR_PERIOD//3, 5))
 
         min_dist = max(info.trade_stops_level * info.point, 30 * info.point)
 
@@ -113,38 +107,48 @@ class VolumeATRTrailing(TrailingEngine):
     def trail(self, pos: Position) -> None:
         info = Broker.get_symbol_info(pos.symbol)
 
-        # 1. Remove any foreign SL once
+        # 1. Remove pre-existing foreign SL only once
         if pos.sl != 0.0 and pos.ticket not in self.cleaned_preexisting_sl and pos.ticket not in self.first_sl_set:
             Broker.modify_sl(pos.ticket, pos.symbol, 0.0, pos.tp, info.digits)
             self.cleaned_preexisting_sl.add(pos.ticket)
             log_event("REMOVED_FOREIGN_SL", ticket=pos.ticket, old_sl=pos.sl)
             return
 
-        # 2. First time we hit +$10 → lock it (GUARANTEED profit ≥ $10 here)
-        if self.should_set_initial_sl(pos):
-            sl = self.calculate_initial_sl(pos)
-            locked_profit = self.profit_if_sl_hit(pos, sl)
-
-            # EXTRA SAFETY: double-check we are not locking a loss
-            if locked_profit < 9.0:  # allow tiny rounding
-                log_event("BLOCKED_BAD_SL", ticket=pos.ticket, would_lock=locked_profit, profit=pos.profit)
-                return
-
-            if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
-                self.first_sl_set.add(pos.ticket)
-                log_event("FIRST_SL_SET_10USD", ticket=pos.ticket, sl=sl, locked=round(locked_profit, 2))
+        # ───── NEW: Log the exact price needed to hit activation if below ─────
+        if pos.profit < PROFIT_TO_ACTIVATE_TRAILING:
+            contract = pos.volume * info.trade_contract_size
+            commission = COMMISSION_PER_LOT * pos.volume
+            dollars_short = PROFIT_TO_ACTIVATE_TRAILING - pos.profit
+            if pos.is_buy:
+                price_needed = pos.price_current + (dollars_short + commission - pos.swap) / contract
+            else:
+                price_needed = pos.price_current - (dollars_short + commission - pos.swap) / contract
+            price_needed = round(price_needed, info.digits)
+            pips_needed = abs(pos.price_current - price_needed) / info.point
+            log_event("PRICE_TO_ACTIVATE_SL", ticket=pos.ticket, dollars_short=round(dollars_short, 2), pips_needed=round(pips_needed), price_needed=price_needed)
             return
 
-        # 3. Trail aggressively (ratchet only)
-        if pos.ticket in self.first_sl_set and pos.sl != 0.0:
+        # 2. First time we hit +$1 → lock exactly $1
+        if self.should_set_initial_sl(pos):
+            sl = self.calculate_initial_sl(pos)
+            locked = self.profit_if_sl_hit(pos, sl)
+            if locked < PROFIT_TO_ACTIVATE_TRAILING * 0.99:  # Dynamic tolerance – was hard-coded 9.0
+                log_event("BLOCKED_BAD_SL", ticket=pos.ticket, would_lock=round(locked, 2), profit=round(pos.profit, 2))
+                return
+            if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
+                self.first_sl_set.add(pos.ticket)
+                log_event("FIRST_SL_SET_1USD", ticket=pos.ticket, sl=sl, locked=round(locked,2))
+            return
+
+        # 3. Once we own the SL → ratchet only, never remove, never move back
+        if pos.ticket in self.first_sl_set:
             new_sl = self.calculate_next_sl(pos)
             point = info.point
-            move_forward = (pos.is_buy and new_sl > pos.sl + point) or \
-                           (not pos.is_buy and new_sl < pos.sl - point)
-
-            if move_forward:
+            should_move = (pos.is_buy and new_sl > pos.sl + point) or \
+                          (not pos.is_buy and new_sl < pos.sl - point)
+            if should_move:
                 Broker.modify_sl(pos.ticket, pos.symbol, new_sl, pos.tp, info.digits)
-                log_event("SL_TRAILED", ticket=pos.ticket, sl=new_sl, profit=round(pos.profit, 2))
+                log_event("SL_TRAILED", ticket=pos.ticket, sl=new_sl, profit=round(pos.profit,2))
 
     def profit_if_sl_hit(self, pos: Position, sl_price: float) -> float:
         if sl_price == 0: return 0.0
