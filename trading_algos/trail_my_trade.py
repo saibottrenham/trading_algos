@@ -69,13 +69,13 @@ def main():
         print("MT5 not running or not logged in!")  # Kept print for init error
         sys.exit(1)
 
-    # CLI parsing
     parser = ArgumentParser(description="Smart trailing engine for one or all positions")
     parser.add_argument("symbol", nargs='?', default=None, help="Filter by symbol (e.g., EURUSD)")
     parser.add_argument("--ticket", type=int, help="Filter by ticket")
     parser.add_argument("--magic", type=int, help="Filter by magic number")
     parser.add_argument("--comment", type=str, help="Filter by comment substring (e.g., 'python')")
     parser.add_argument("--all", action="store_true", help="Run forever, trailing all (new/old) matching positions")
+    parser.add_argument("--ignore-tp-positions", action="store_true", help="Ignore positions with take profit set (skip trailing, no SL touch)")
     args = parser.parse_args()
 
     engine = select_engine() if not (args.ticket or args.symbol or args.all) else VolumeATRTrailing()  # Default for CLI
@@ -89,6 +89,9 @@ def main():
                 sys.exit(0)
         else:
             positions = select_position()
+        # Filter out TP positions if flag set
+        if args.ignore_tp_positions:
+            positions = [p for p in positions if p.tp == 0.0]
         log_event("ENGINE_INIT", engine=engine.__class__.__name__)
         log_event("TRAILING_START", num_positions=len(positions))
         active_tickets = {pos.ticket for pos in positions}
@@ -113,6 +116,9 @@ def main():
                 new_pos_data = mt5.positions_get(ticket=new_ticket)
                 if new_pos_data:
                     new_p = new_pos_data[0]
+                    if args.ignore_tp_positions and new_p.tp != 0.0:
+                        log_event("SKIPPED_TP_POSITION", ticket=new_ticket)
+                        continue
                     new_pos_obj = Position.from_mt5(new_p)
                     engine.trail(new_pos_obj)
                     active_tickets.add(new_ticket)
@@ -126,6 +132,11 @@ def main():
                     active_tickets.discard(ticket)
                     continue
                 p = cur_pos_data[0]
+                # Mid-run check: If TP added later and flag set, skip trail + drop
+                if args.ignore_tp_positions and p.tp != 0.0:
+                    log_event("SKIPPED_TP_POSITION", ticket=ticket)
+                    active_tickets.discard(ticket)
+                    continue
                 pos_obj = Position.from_mt5(p)
                 engine.trail(pos_obj)
 
