@@ -1,9 +1,12 @@
+# trading_algos/trailing/volume_atr.py
 from trading_algos.trailing.base import TrailingEngine
 from trading_algos.core.position import Position
 from trading_algos.core.broker import Broker
 from trading_algos.core.logger import log_event
 import numpy as np
 import pandas as pd
+import time  # Added for throttle
+
 from trading_algos.config import (
     PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT,
     BASE_MULTIPLIER, VOLUME_SENSITIVITY, MIN_MULTIPLIER, MAX_MULTIPLIER,
@@ -17,12 +20,12 @@ except ImportError:
     _MT5_AVAILABLE = False
     mt5 = None
 
-
 class VolumeATRTrailing(TrailingEngine):
     def __init__(self):
         self.first_sl_set = set()          # Tickets where WE set the first SL
         self.cleaned_preexisting_sl = set()  # Tickets where we removed someone else's SL
         self.last_profit = {}              # Per-ticket profit velocity tracking
+        self.last_monitor_log = {}         # Per-ticket last monitor time (throttle)
 
     # ── Helpers ─────────────────────
     def _get_volume_ratio(self, symbol: str) -> float:
@@ -34,11 +37,7 @@ class VolumeATRTrailing(TrailingEngine):
         cur = df['tick_volume'].iloc[-1]
         return cur / avg if avg > 0 else 1.0
 
-    def _get_atr(self, symbol: str, timeframe=None, period=None) -> float:
-        if timeframe is None:
-            timeframe = mt5.TIMEFRAME_M5 if _MT5_AVAILABLE else 1
-        if period is None:
-            period = ATR_PERIOD
+    def _get_atr(self, symbol: str, timeframe=mt5.TIMEFRAME_M5, period=ATR_PERIOD) -> float:
         if not _MT5_AVAILABLE:
             info = Broker.get_symbol_info(symbol)
             return info.point * 150
@@ -88,8 +87,8 @@ class VolumeATRTrailing(TrailingEngine):
             mult *= max(0.7, 1 - velocity/60)
         self.last_profit[pos.ticket] = (pos.profit, now)
 
-        atr = 0.7 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M5 if _MT5_AVAILABLE else 1) + \
-              0.3 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M1 if _MT5_AVAILABLE else 1, max(ATR_PERIOD//3, 5))
+        atr = 0.7 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M5) + \
+              0.3 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M1, max(ATR_PERIOD//3, 5))
 
         min_dist = max(info.trade_stops_level * info.point, 30 * info.point)
 
@@ -114,16 +113,13 @@ class VolumeATRTrailing(TrailingEngine):
             log_event("REMOVED_FOREIGN_SL", ticket=pos.ticket, old_sl=pos.sl)
             return
 
-        # 2. First time we hit +$1 → lock exactly $1
+        # 2. First time we hit +$10 → lock exactly $10
         if self.should_set_initial_sl(pos):
             sl = self.calculate_initial_sl(pos)
             locked = self.profit_if_sl_hit(pos, sl)
-            if locked < PROFIT_TO_ACTIVATE_TRAILING * 0.99:  # Dynamic tolerance
-                log_event("BLOCKED_BAD_SL", ticket=pos.ticket, would_lock=round(locked, 2), profit=round(pos.profit, 2))
-                return
             if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
                 self.first_sl_set.add(pos.ticket)
-                log_event(f"FIRST_SL_SET", ticket=pos.ticket, sl=sl, locked=round(locked,2))
+                log_event("FIRST_SL_SET_10USD", ticket=pos.ticket, sl=sl, locked=round(locked,2))
             return
 
         # 3. Once we own the SL → ratchet only, never remove, never move back
@@ -137,9 +133,11 @@ class VolumeATRTrailing(TrailingEngine):
                 log_event("SL_TRAILED", ticket=pos.ticket, sl=new_sl, profit=round(pos.profit,2))
             return
 
-        # Simple monitoring if below activation
-        needed_profit = PROFIT_TO_ACTIVATE_TRAILING - pos.profit
-        log_event("POSITION_MONITOR", ticket=pos.ticket, current_profit=round(pos.profit, 2), needed_profit=round(needed_profit, 2))
+        # Throttled monitoring if below activation (60s/ticket)
+        if pos.ticket not in self.last_monitor_log or time.time() - self.last_monitor_log[pos.ticket] > 60:
+            needed_profit = PROFIT_TO_ACTIVATE_TRAILING - pos.profit
+            log_event("POSITION_MONITOR", ticket=pos.ticket, current_profit=round(pos.profit, 2), needed_profit=round(needed_profit, 2))
+            self.last_monitor_log[pos.ticket] = time.time()
 
     def profit_if_sl_hit(self, pos: Position, sl_price: float) -> float:
         if sl_price == 0: return 0.0

@@ -1,12 +1,13 @@
+# trading_algos/trail_my_trade.py
 import sys
 import time
 from datetime import datetime
 import MetaTrader5 as mt5
 from argparse import ArgumentParser
-import logging  # Added for proper logging
 
 from trading_algos.config import CHECK_INTERVAL_SEC
 from trading_algos.core.position import Position
+from trading_algos.core.logger import log_event  # Unified JSON logging
 # Engines
 from trading_algos.trailing.volume_atr import VolumeATRTrailing
 AVAILABLE_ENGINES = {
@@ -68,9 +69,6 @@ def main():
         print("MT5 not running or not logged in!")  # Kept print for init error
         sys.exit(1)
 
-    # Setup logging
-    logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s', datefmt='%H:%M:%S')
-
     # CLI parsing
     parser = ArgumentParser(description="Smart trailing engine for one or all positions")
     parser.add_argument("symbol", nargs='?', default=None, help="Filter by symbol (e.g., EURUSD)")
@@ -91,21 +89,21 @@ def main():
                 sys.exit(0)
         else:
             positions = select_position()
-        logging.info(f"Using engine: {engine.__class__.__name__}")
-        logging.info(f"Trailing {len(positions)} position(s)")
+        log_event("ENGINE_INIT", engine=engine.__class__.__name__)
+        log_event("TRAILING_START", num_positions=len(positions))
         active_tickets = {pos.ticket for pos in positions}
     else:
         # --all mode: No initial positions, full dynamic scan every loop
-        logging.info(f"Using engine: VolumeATRTrailing (eternal mode)")
-        logging.info("Trailing all matching positions forever (new/old)")
-        if args.symbol: logging.info(f"Symbol filter: {args.symbol}")
-        if args.magic: logging.info(f"Magic filter: {args.magic}")
-        if args.comment: logging.info(f"Comment filter: {args.comment}")
+        log_event("ENGINE_INIT", engine="VolumeATRTrailing", mode="eternal")
+        log_event("TRAILING_FOREVER")
+        if args.symbol: log_event("FILTER_SET", filter_type="symbol", value=args.symbol)
+        if args.magic: log_event("FILTER_SET", filter_type="magic", value=args.magic)
+        if args.comment: log_event("FILTER_SET", filter_type="comment", value=args.comment)
         active_tickets = set()
 
+    last_sleep_log = time.time()  # Throttle sleeping log
     try:
         while True:
-            now = datetime.now().strftime("%H:%M:%S")  # Kept for potential, but logging has timestamp
             current_positions = get_filtered_positions(args.symbol, None, args.magic, args.comment)
             current_tickets = {p.ticket for p in current_positions}
 
@@ -118,13 +116,13 @@ def main():
                     new_pos_obj = Position.from_mt5(new_p)
                     engine.trail(new_pos_obj)
                     active_tickets.add(new_ticket)
-                    logging.info(f"Started trailing new position #{new_ticket}")
+                    log_event("START_TRAILING", ticket=new_ticket)
 
             # Trail active ones (no verbose logging here)
             for ticket in list(active_tickets):
                 cur_pos_data = mt5.positions_get(ticket=ticket)
                 if not cur_pos_data:
-                    logging.info(f"Position #{ticket} closed — removing from watch")
+                    log_event("POSITION_CLOSED", ticket=ticket)
                     active_tickets.discard(ticket)
                     continue
                 p = cur_pos_data[0]
@@ -133,13 +131,15 @@ def main():
 
             if not active_tickets:
                 if not args.all:
-                    logging.info("No active positions left — exiting")
+                    log_event("NO_ACTIVE_EXITING")
                     break
                 else:
-                    logging.info("No positions currently — sleeping")
+                    if time.time() - last_sleep_log > 60:
+                        log_event("NO_POSITIONS_SLEEPING")
+                        last_sleep_log = time.time()
             time.sleep(CHECK_INTERVAL_SEC)
     except KeyboardInterrupt:
-        logging.info("Stopped by user")
+        log_event("USER_STOP")
     finally:
         mt5.shutdown()
 

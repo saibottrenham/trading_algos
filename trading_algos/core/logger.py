@@ -11,6 +11,7 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+    logger.propagate = False  # Kill dupe to root—unified JSON only
 
 def log_event(event: str, **kwargs: Any) -> None:
     """Structured log in JSON lines (easy to grep/parse later)"""
