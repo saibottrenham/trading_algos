@@ -69,6 +69,7 @@ def main():
         print("MT5 not running or not logged in!")  # Kept print for init error
         sys.exit(1)
 
+    # CLI parsing (added --ignore-tp-positions)
     parser = ArgumentParser(description="Smart trailing engine for one or all positions")
     parser.add_argument("symbol", nargs='?', default=None, help="Filter by symbol (e.g., EURUSD)")
     parser.add_argument("--ticket", type=int, help="Filter by ticket")
