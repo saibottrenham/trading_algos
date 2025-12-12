@@ -95,7 +95,12 @@ def main():
             positions = [p for p in positions if p.tp == 0.0]
         log_event("ENGINE_INIT", engine=engine.__class__.__name__)
         log_event("TRAILING_START", num_positions=len(positions))
-        active_tickets = {pos.ticket for pos in positions}
+        active_tickets = set()
+        for pos in positions:
+            pos_obj = Position.from_mt5(pos)
+            engine.trail(pos_obj)
+            active_tickets.add(pos.ticket)
+            log_event("START_TRAILING", ticket=pos.ticket)
     else:
         # --all mode: No initial positions, full dynamic scan every loop
         log_event("ENGINE_INIT", engine="VolumeATRTrailing", mode="eternal")
@@ -106,6 +111,7 @@ def main():
         active_tickets = set()
 
     last_sleep_log = time.time()  # Throttle sleeping log
+    last_skip_log = {}  # Per-ticket throttle for skipped logs
     try:
         while True:
             current_positions = get_filtered_positions(args.symbol, None, args.magic, args.comment)
@@ -118,7 +124,9 @@ def main():
                 if new_pos_data:
                     new_p = new_pos_data[0]
                     if args.ignore_tp_positions and new_p.tp != 0.0:
-                        log_event("SKIPPED_TP_POSITION", ticket=new_ticket)
+                        if new_ticket not in last_skip_log or time.time() - last_skip_log[new_ticket] > 60:
+                            log_event("SKIPPED_TP_POSITION", ticket=new_ticket, tp_value=new_p.tp)
+                            last_skip_log[new_ticket] = time.time()
                         continue
                     new_pos_obj = Position.from_mt5(new_p)
                     engine.trail(new_pos_obj)
@@ -135,7 +143,9 @@ def main():
                 p = cur_pos_data[0]
                 # Mid-run check: If TP added later and flag set, skip trail + drop
                 if args.ignore_tp_positions and p.tp != 0.0:
-                    log_event("SKIPPED_TP_POSITION", ticket=ticket)
+                    if ticket not in last_skip_log or time.time() - last_skip_log[ticket] > 60:
+                        log_event("SKIPPED_TP_POSITION", ticket=ticket, tp_value=p.tp)
+                        last_skip_log[ticket] = time.time()
                     active_tickets.discard(ticket)
                     continue
                 pos_obj = Position.from_mt5(p)
