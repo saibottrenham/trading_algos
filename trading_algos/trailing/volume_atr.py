@@ -55,7 +55,17 @@ class VolumeATRTrailing(TrailingEngine):
 
     # ── Core logic ─────────────────────────────
     def should_set_initial_sl(self, pos: Position) -> bool:
-        return pos.profit >= PROFIT_TO_ACTIVATE_TRAILING and pos.ticket not in self.first_sl_set
+        if pos.ticket in self.first_sl_set:
+            return False
+        info = Broker.get_symbol_info(pos.symbol)
+        min_dist = max(info.trade_stops_level * info.point, 30 * info.point)
+        contract = pos.volume * info.trade_contract_size
+        min_dist_dollars = min_dist * contract
+        commission = COMMISSION_PER_LOT * pos.volume
+        required_profit = PROFIT_TO_ACTIVATE_TRAILING + min_dist_dollars + commission - pos.swap
+        if pos.profit < required_profit:
+            return False
+        return True
 
     def calculate_initial_sl(self, pos: Position) -> float:
         info = Broker.get_symbol_info(pos.symbol)
