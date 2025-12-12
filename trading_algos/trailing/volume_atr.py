@@ -113,13 +113,19 @@ class VolumeATRTrailing(TrailingEngine):
             log_event("REMOVED_FOREIGN_SL", ticket=pos.ticket, old_sl=pos.sl)
             return
 
-        # 2. First time we hit +$10 → lock exactly $10
+        # 2. First time we hit +PROFIT_TO_ACTIVATE_TRAILING → lock exactly PROFIT_TO_ACTIVATE_TRAILING (only if buffer allows full lock)
         if self.should_set_initial_sl(pos):
             sl = self.calculate_initial_sl(pos)
             locked = self.profit_if_sl_hit(pos, sl)
-            if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
-                self.first_sl_set.add(pos.ticket)
-                log_event("FIRST_SL_SET_10USD", ticket=pos.ticket, sl=sl, locked=round(locked,2))
+            if locked >= PROFIT_TO_ACTIVATE_TRAILING - 0.01:  # Float tolerance, ensure >=PROFIT_TO_ACTIVATE_TRAILING lock
+                if (pos.is_buy and sl > pos.price_open) or (not pos.is_buy and sl < pos.price_open):
+                    if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
+                        self.first_sl_set.add(pos.ticket)
+                        log_event("FIRST_SL_SET", ticket=pos.ticket, sl=sl, locked=round(locked,2), target=PROFIT_TO_ACTIVATE_TRAILING)
+                else:
+                    log_event("SKIPPED_INITIAL_NEGATIVE_LOCK", ticket=pos.ticket, proposed_sl=sl, open_price=pos.price_open)
+            else:
+                log_event("SKIPPED_INITIAL_INSUFFICIENT_BUFFER", ticket=pos.ticket, locked=round(locked,2), needed_buffer=round(PROFIT_TO_ACTIVATE_TRAILING - locked,2))
             return
 
         # 3. Once we own the SL → ratchet only, never remove, never move back
