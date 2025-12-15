@@ -98,15 +98,16 @@ class VolumeATRTrailing(BasicTrailingEngine):
         if self.should_set_initial_sl(pos):
             sl = self.calculate_initial_sl(pos)
             locked = pos.profit_if_sl_hit(sl)
-            if locked >= PROFIT_TO_ACTIVATE_TRAILING - 0.11:  # Increased tolerance to 0.1 for rounding
+            target = PROFIT_TO_ACTIVATE_TRAILING
+            if locked >= target:  # Ceil ensures >= if buffer allows; no tolerance needed
                 if (pos.is_buy and sl > pos.price_open) or (not pos.is_buy and sl < pos.price_open):
                     if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
                         self.first_sl_set.add(pos.ticket)
-                        log_event("FIRST_SL_SET", ticket=pos.ticket, sl=sl, locked=round(locked,2), target=PROFIT_TO_ACTIVATE_TRAILING)
+                        log_event("FIRST_SL_SET", ticket=pos.ticket, sl=sl, locked=round(locked,2), target=target)
                 else:
                     log_event("SKIPPED_INITIAL_NEGATIVE_LOCK", ticket=pos.ticket, proposed_sl=sl, open_price=pos.price_open)
             else:
-                log_event("SKIPPED_INITIAL_INSUFFICIENT_BUFFER", ticket=pos.ticket, locked=round(locked,2), needed_buffer=round(PROFIT_TO_ACTIVATE_TRAILING - locked,2))
+                log_event("SKIPPED_INITIAL_INSUFFICIENT_BUFFER", ticket=pos.ticket, locked=round(locked,2), needed_buffer=round(target - locked,2))
             return
 
         # 3. Once we own the SL → ratchet only, never remove, never move back

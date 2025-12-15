@@ -25,18 +25,22 @@ class BasicTrailingEngine(TrailingEngine):
         return pos.profit >= PROFIT_TO_ACTIVATE_TRAILING and pos.ticket not in self.first_sl_set
 
     def calculate_initial_sl(self, pos: Position) -> float:
+        import math
         from trading_algos.core.broker import Broker
         from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT
         info = Broker.get_symbol_info(pos.symbol)
-        target_profit = PROFIT_TO_ACTIVATE_TRAILING
+        target = PROFIT_TO_ACTIVATE_TRAILING
         commission = COMMISSION_PER_LOT * pos.volume
         contract = pos.volume * info.trade_contract_size
+        required_diff = (target + commission - pos.swap) / contract
+        min_ticks = math.ceil(required_diff / info.point)
+        diff = min_ticks * info.point
 
         if pos.is_buy:
-            sl = pos.price_open + (target_profit + commission - pos.swap) / contract
+            sl = pos.price_open + diff
             sl = min(sl, pos.price_current - max(info.trade_stops_level * info.point, 30 * info.point))
         else:
-            sl = pos.price_open - (target_profit + commission - pos.swap) / contract
+            sl = pos.price_open - diff
             sl = max(sl, pos.price_current + max(info.trade_stops_level * info.point, 30 * info.point))
 
         return round(sl, info.digits)
