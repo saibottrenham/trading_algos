@@ -1,5 +1,5 @@
 # trading_algos/trailing/volume_atr.py
-from trading_algos.trailing.base import TrailingEngine
+from trading_algos.trailing.base import BasicTrailingEngine
 from trading_algos.core.position import Position
 from trading_algos.core.broker import Broker
 from trading_algos.core.logger import log_event
@@ -20,9 +20,9 @@ except ImportError:
     _MT5_AVAILABLE = False
     mt5 = None
 
-class VolumeATRTrailing(TrailingEngine):
+class VolumeATRTrailing(BasicTrailingEngine):
     def __init__(self):
-        self.first_sl_set = set()          # Tickets where WE set the first SL
+        super().__init__()
         self.cleaned_preexisting_sl = set()  # Tickets where we removed someone else's SL
         self.last_profit = {}              # Per-ticket profit velocity tracking
         self.last_monitor_log = {}         # Per-ticket last monitor time (throttle)
@@ -30,7 +30,7 @@ class VolumeATRTrailing(TrailingEngine):
     # ── Helpers ─────────────────────
     def _get_volume_ratio(self, symbol: str) -> float:
         if not _MT5_AVAILABLE: return 1.0
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, VOLUME_LOOKBACK + 10)
+        rates = Broker.robust_copy_rates(symbol, mt5.TIMEFRAME_M5, 0, VOLUME_LOOKBACK + 10)
         if rates is None or len(rates) < VOLUME_LOOKBACK: return 1.0
         df = pd.DataFrame(rates)
         avg = df['tick_volume'].rolling(VOLUME_LOOKBACK).mean().iloc[-2]
@@ -41,7 +41,7 @@ class VolumeATRTrailing(TrailingEngine):
         if not _MT5_AVAILABLE:
             info = Broker.get_symbol_info(symbol)
             return info.point * 150
-        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, period + 20)
+        rates = Broker.robust_copy_rates(symbol, timeframe, 0, period + 20)
         if rates is None or len(rates) <= period:
             info = Broker.get_symbol_info(symbol)
             return info.point * 150
@@ -52,25 +52,6 @@ class VolumeATRTrailing(TrailingEngine):
             (df['low'] - df['close'].shift()).abs()
         ], axis=1).max(axis=1)
         return tr.rolling(period).mean().iloc[-1]
-
-    # ── Core logic ─────────────────────────────
-    def should_set_initial_sl(self, pos: Position) -> bool:
-        return pos.profit >= PROFIT_TO_ACTIVATE_TRAILING and pos.ticket not in self.first_sl_set
-
-    def calculate_initial_sl(self, pos: Position) -> float:
-        info = Broker.get_symbol_info(pos.symbol)
-        target = PROFIT_TO_ACTIVATE_TRAILING
-        commission = COMMISSION_PER_LOT * pos.volume
-        contract = pos.volume * info.trade_contract_size
-
-        if pos.is_buy:
-            sl = pos.price_open + (target + commission - pos.swap) / contract
-            sl = min(sl, pos.price_current - max(info.trade_stops_level * info.point, 30 * info.point))
-        else:
-            sl = pos.price_open - (target + commission - pos.swap) / contract
-            sl = max(sl, pos.price_current + max(info.trade_stops_level * info.point, 30 * info.point))
-
-        return round(sl, info.digits)
 
     def calculate_next_sl(self, pos: Position) -> float:
         info = Broker.get_symbol_info(pos.symbol)
@@ -116,7 +97,7 @@ class VolumeATRTrailing(TrailingEngine):
         # 2. First time we hit +PROFIT_TO_ACTIVATE_TRAILING → lock exactly PROFIT_TO_ACTIVATE_TRAILING (only if buffer allows full lock)
         if self.should_set_initial_sl(pos):
             sl = self.calculate_initial_sl(pos)
-            locked = self.profit_if_sl_hit(pos, sl)
+            locked = pos.profit_if_sl_hit(sl)
             if locked >= PROFIT_TO_ACTIVATE_TRAILING - 0.11:  # Increased tolerance to 0.1 for rounding
                 if (pos.is_buy and sl > pos.price_open) or (not pos.is_buy and sl < pos.price_open):
                     if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
@@ -144,10 +125,3 @@ class VolumeATRTrailing(TrailingEngine):
             needed_profit = PROFIT_TO_ACTIVATE_TRAILING - pos.profit
             log_event("POSITION_MONITOR", ticket=pos.ticket, current_profit=round(pos.profit, 2), needed_profit=round(needed_profit, 2))
             self.last_monitor_log[pos.ticket] = time.time()
-
-    def profit_if_sl_hit(self, pos: Position, sl_price: float) -> float:
-        if sl_price == 0: return 0.0
-        info = Broker.get_symbol_info(pos.symbol)
-        diff = (sl_price - pos.price_open) if pos.is_buy else (pos.price_open - sl_price)
-        gross = diff * pos.volume * info.trade_contract_size
-        return gross + pos.swap - (COMMISSION_PER_LOT * pos.volume)

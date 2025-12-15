@@ -17,21 +17,18 @@ class TrailingEngine(ABC):
 
 class BasicTrailingEngine(TrailingEngine):
     """Concrete base for simple engines—override as needed. Implements trail() logic."""
-    def __init__(self, fixed_pips=20):
-        self.fixed_pips = fixed_pips
+    def __init__(self):
         self.first_sl_set = set()
 
     def should_set_initial_sl(self, pos: Position) -> bool:
-        # Default: profit > $0.10 and not set yet
-        from trading_algos.config import MIN_PROFIT_TO_START
-        return pos.profit >= MIN_PROFIT_TO_START and pos.ticket not in self.first_sl_set
+        from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING
+        return pos.profit >= PROFIT_TO_ACTIVATE_TRAILING and pos.ticket not in self.first_sl_set
 
     def calculate_initial_sl(self, pos: Position) -> float:
-        # Default: lock $1 buffer
         from trading_algos.core.broker import Broker
-        from trading_algos.config import EXTRA_SAFETY_BUFFER, COMMISSION_PER_LOT
+        from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT
         info = Broker.get_symbol_info(pos.symbol)
-        target_profit = EXTRA_SAFETY_BUFFER
+        target_profit = PROFIT_TO_ACTIVATE_TRAILING
         commission = COMMISSION_PER_LOT * pos.volume
         contract = pos.volume * info.trade_contract_size
 
@@ -45,30 +42,15 @@ class BasicTrailingEngine(TrailingEngine):
         return round(sl, info.digits)
 
     def calculate_next_sl(self, pos: Position) -> float:
-        # Default: fixed 20-pip trail (override for ATR/PSAR)
-        from trading_algos.core.broker import Broker
-        info = Broker.get_symbol_info(pos.symbol)
-        point = info.point
-        min_dist = max(info.trade_stops_level * point, 30 * point)
-
-        if pos.is_buy:
-            candidate = pos.price_current - self.fixed_pips * point * 10  # pips to points
-            new_sl = max(candidate, pos.sl)
-            new_sl = min(new_sl, pos.price_current - min_dist)
-        else:
-            candidate = pos.price_current + self.fixed_pips * point * 10
-            new_sl = min(candidate, pos.sl)
-            new_sl = max(new_sl, pos.price_current + min_dist)
-
-        return round(new_sl, info.digits)
+        raise NotImplementedError("Override in subclass for specific trailing logic")
 
     def trail(self, pos: Position) -> None:
         from trading_algos.core.broker import Broker
-        from trading_algos.config import MIN_PROFIT_TO_START
+        from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING
         info = Broker.get_symbol_info(pos.symbol)
 
-        # Low profit: remove SL
-        if pos.profit < MIN_PROFIT_TO_START and pos.sl != 0.0:
+        # Low profit: remove SL (override if unwanted)
+        if pos.profit < PROFIT_TO_ACTIVATE_TRAILING and pos.sl != 0.0:
             Broker.modify_sl(pos.ticket, pos.symbol, 0.0, pos.tp, info.digits)
             return
 

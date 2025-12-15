@@ -8,6 +8,7 @@ from argparse import ArgumentParser
 from trading_algos.config import CHECK_INTERVAL_SEC
 from trading_algos.core.position import Position
 from trading_algos.core.logger import log_event  # Unified JSON logging
+from trading_algos.core.broker import Broker
 # Engines
 from trading_algos.trailing.volume_atr import VolumeATRTrailing
 AVAILABLE_ENGINES = {
@@ -15,13 +16,15 @@ AVAILABLE_ENGINES = {
 }
 
 def get_filtered_positions(symbol=None, ticket=None, magic=None, comment=None):
-    """Fetch and filter open positions based on args."""
-    positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+    """Fetch and filter open positions based on args, using robust fetch."""
+    if ticket is not None:
+        positions = Broker.robust_positions_get(ticket=ticket)
+    else:
+        positions = Broker.robust_positions_get(symbol=symbol)
     if not positions:
         return []
+
     filtered = list(positions)
-    if ticket:
-        filtered = [p for p in filtered if p.ticket == ticket]
     if magic:
         filtered = [p for p in filtered if p.magic == magic]
     if comment:
@@ -41,7 +44,7 @@ def select_engine():
         print("Invalid — try again")
 
 def select_position():
-    positions = mt5.positions_get()
+    positions = Broker.robust_positions_get()
     if not positions:
         print("No open positions.")
         mt5.shutdown()
@@ -120,7 +123,7 @@ def main():
             # Add new positions
             new_tickets = current_tickets - active_tickets
             for new_ticket in new_tickets:
-                new_pos_data = mt5.positions_get(ticket=new_ticket)
+                new_pos_data = Broker.robust_positions_get(ticket=new_ticket)
                 if new_pos_data:
                     new_p = new_pos_data[0]
                     if args.ignore_tp_positions and new_p.tp != 0.0:
@@ -135,7 +138,7 @@ def main():
 
             # Trail active ones (no verbose logging here)
             for ticket in list(active_tickets):
-                cur_pos_data = mt5.positions_get(ticket=ticket)
+                cur_pos_data = Broker.robust_positions_get(ticket=ticket)
                 if not cur_pos_data:
                     log_event("POSITION_CLOSED", ticket=ticket)
                     active_tickets.discard(ticket)

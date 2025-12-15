@@ -2,11 +2,14 @@
 from dataclasses import dataclass
 from typing import Any
 
+from trading_algos.core.broker import Broker
+from trading_algos.config import COMMISSION_PER_LOT
+
 @dataclass
 class Position:
     ticket: int
     symbol: str
-    type: int          # 0=buy, 1=sell
+    type: int  # 0=buy, 1=sell
     volume: float
     price_open: float
     price_current: float
@@ -35,3 +38,10 @@ class Position:
             swap=mt5_pos.swap,
             comment=getattr(mt5_pos, "comment", ""),
         )
+
+    def profit_if_sl_hit(self, sl_price: float) -> float:
+        if sl_price == 0: return 0.0
+        info = Broker.get_symbol_info(self.symbol)
+        diff = (sl_price - self.price_open) if self.is_buy else (self.price_open - sl_price)
+        gross = diff * self.volume * info.trade_contract_size
+        return gross + self.swap - (COMMISSION_PER_LOT * self.volume)
