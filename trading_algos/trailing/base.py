@@ -1,6 +1,7 @@
 # trading_algos/trailing/base.py
 from abc import ABC, abstractmethod
 from trading_algos.core.position import Position
+import math  # Added for ceil
 
 class TrailingEngine(ABC):
     @abstractmethod
@@ -25,22 +26,32 @@ class BasicTrailingEngine(TrailingEngine):
         return pos.profit >= PROFIT_TO_ACTIVATE_TRAILING and pos.ticket not in self.first_sl_set
 
     def calculate_initial_sl(self, pos: Position) -> float:
-        import math
         from trading_algos.core.broker import Broker
         from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT
+        import MetaTrader5 as mt5
         info = Broker.get_symbol_info(pos.symbol)
-        target = PROFIT_TO_ACTIVATE_TRAILING
-        commission = COMMISSION_PER_LOT * pos.volume
-        contract = pos.volume * info.trade_contract_size
-        required_diff = (target + commission - pos.swap) / contract
-        min_ticks = math.ceil(required_diff / info.point)
-        diff = min_ticks * info.point
+        target_profit = PROFIT_TO_ACTIVATE_TRAILING
+        action = mt5.ORDER_TYPE_BUY if pos.is_buy else mt5.ORDER_TYPE_SELL
+
+        # Estimate k from current position (handles account currency conversion)
+        raw_current = Broker.robust_order_calc_profit(action, pos.symbol, pos.volume, pos.price_open, pos.price_current)
+        diff = (pos.price_current - pos.price_open) if pos.is_buy else (pos.price_open - pos.price_current)
+        if diff == 0:
+            return 0.0
+        k = raw_current / diff
+
+        required_raw = target_profit - pos.swap + (COMMISSION_PER_LOT * pos.volume)
+        required_diff = required_raw / k
+
+        # Ceil to next full tick to guarantee >= target after rounding
+        required_points = math.ceil(required_diff / info.point)
+        required_diff = required_points * info.point
 
         if pos.is_buy:
-            sl = pos.price_open + diff
+            sl = pos.price_open + required_diff
             sl = min(sl, pos.price_current - max(info.trade_stops_level * info.point, 30 * info.point))
         else:
-            sl = pos.price_open - diff
+            sl = pos.price_open - required_diff
             sl = max(sl, pos.price_current + max(info.trade_stops_level * info.point, 30 * info.point))
 
         return round(sl, info.digits)

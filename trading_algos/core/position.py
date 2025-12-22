@@ -4,6 +4,7 @@ from typing import Any
 
 from trading_algos.core.broker import Broker
 from trading_algos.config import COMMISSION_PER_LOT
+import MetaTrader5 as mt5
 
 @dataclass
 class Position:
@@ -41,7 +42,6 @@ class Position:
 
     def profit_if_sl_hit(self, sl_price: float) -> float:
         if sl_price == 0: return 0.0
-        info = Broker.get_symbol_info(self.symbol)
-        diff = (sl_price - self.price_open) if self.is_buy else (self.price_open - sl_price)
-        gross = diff * self.volume * info.trade_contract_size
-        return gross + self.swap - (COMMISSION_PER_LOT * self.volume)
+        action = mt5.ORDER_TYPE_BUY if self.is_buy else mt5.ORDER_TYPE_SELL
+        raw_profit = Broker.robust_order_calc_profit(action, self.symbol, self.volume, self.price_open, sl_price)
+        return raw_profit + self.swap - (COMMISSION_PER_LOT * self.volume)

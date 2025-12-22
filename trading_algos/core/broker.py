@@ -90,3 +90,28 @@ class Broker:
                 raise RuntimeError("Failed to fetch rates after retry.")
             log_event("CONNECTION_RESTORED")
         return rates
+
+    @staticmethod
+    def robust_order_calc_profit(action: int, symbol: str, volume: float, price_open: float, price_close: float) -> float:
+        if not _MT5_AVAILABLE:
+            # Fallback assuming USD account
+            info = Broker.get_symbol_info(symbol)
+            diff = (price_close - price_open) if action == mt5.ORDER_TYPE_BUY else (price_open - price_close)
+            return diff * volume * info.trade_contract_size
+
+        def fetch():
+            return mt5.order_calc_profit(action, symbol, volume, price_open, price_close)
+
+        profit = fetch()
+        if profit is None:
+            error_code, error_msg = mt5.last_error()
+            log_event("CONNECTION_DROP_DETECTED", error_code=error_code, error_msg=error_msg)
+            if not mt5.initialize():
+                log_event("REINIT_FAILED")
+                raise RuntimeError("MT5 reinitialization failed—check terminal status.")
+            profit = fetch()
+            if profit is None:
+                log_event("RETRY_FAILED")
+                raise RuntimeError("Failed to calc profit after retry.")
+            log_event("CONNECTION_RESTORED")
+        return profit or 0.0
