@@ -3,12 +3,12 @@
 
 CHECK_INTERVAL_SEC = 1  # Faster poll for gold spikes (was 2)
 
-# Dynamic profit rule base
-BASE_PROFIT_TO_ACTIVATE = 10.0  # Base for 0.05 lots; scales up
-BASE_LOT_FOR_PROFIT = 0.05  # Reference lot for base profit
+# Profit rule base
+BASE_PROFIT_TO_ACTIVATE = 10.0  # Base min profit
+THRESHOLD_FACTOR_PER_MARGIN = 0.0625  # Factor to scale add based on position margin (tuned for gold ~25 at 0.5 lot)
 
-# Broker costs
-COMMISSION_PER_LOT = 0  # Your round-turn commission per lot
+# Broker costs (IC Raw typical)
+COMMISSION_PER_LOT = 0.0  # Per side round-turn
 
 # Volume-ATR aggression (tuned for 2-3 min spikes; optimize for XAUUSD)
 BASE_MULTIPLIER = 2.0  # Base trail tightness

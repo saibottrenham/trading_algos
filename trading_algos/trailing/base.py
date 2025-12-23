@@ -30,9 +30,12 @@ class BasicTrailingEngine(TrailingEngine):
         return max(info.trade_stops_level, buffer_points) * info.point
 
     def _get_profit_threshold(self, pos: Position) -> float:
-        """Shared helper for dynamic profit threshold based on lot size."""
-        from trading_algos.config import BASE_PROFIT_TO_ACTIVATE, BASE_LOT_FOR_PROFIT
-        return BASE_PROFIT_TO_ACTIVATE * (pos.volume / BASE_LOT_FOR_PROFIT)
+        """Shared helper for dynamic profit threshold based on position margin."""
+        from trading_algos.config import BASE_PROFIT_TO_ACTIVATE, THRESHOLD_FACTOR_PER_MARGIN
+        import MetaTrader5 as mt5
+        action = mt5.ORDER_TYPE_BUY if pos.is_buy else mt5.ORDER_TYPE_SELL
+        position_margin = Broker.robust_order_calc_margin(action, pos.symbol, pos.volume, pos.price_open)
+        return BASE_PROFIT_TO_ACTIVATE + (position_margin * THRESHOLD_FACTOR_PER_MARGIN)
 
     def should_set_initial_sl(self, pos: Position) -> bool:
         threshold = self._get_profit_threshold(pos)

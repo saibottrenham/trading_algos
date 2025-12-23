@@ -115,3 +115,27 @@ class Broker:
                 raise RuntimeError("Failed to calc profit after retry.")
             log_event("CONNECTION_RESTORED")
         return profit or 0.0
+
+    @staticmethod
+    def robust_order_calc_margin(action: int, symbol: str, volume: float, price: float) -> float:
+        if not _MT5_AVAILABLE:
+            # Fallback: approximate margin = (volume * contract_size * price) / leverage (assume 500)
+            info = Broker.get_symbol_info(symbol)
+            return (volume * info.trade_contract_size * price) / 500
+
+        def fetch():
+            return mt5.order_calc_margin(action, symbol, volume, price)
+
+        margin = fetch()
+        if margin is None:
+            error_code, error_msg = mt5.last_error()
+            log_event("CONNECTION_DROP_DETECTED", error_code=error_code, error_msg=error_msg)
+            if not mt5.initialize():
+                log_event("REINIT_FAILED")
+                raise RuntimeError("MT5 reinitialization failed—check terminal status.")
+            margin = fetch()
+            if margin is None:
+                log_event("RETRY_FAILED")
+                raise RuntimeError("Failed to calc margin after retry.")
+            log_event("CONNECTION_RESTORED")
+        return margin or 0.0
