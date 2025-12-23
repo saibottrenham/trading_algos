@@ -1,7 +1,7 @@
 # trading_algos/trailing/base.py
 from abc import ABC, abstractmethod
 from trading_algos.core.position import Position
-import math  # Added for ceil
+import math  # Added for ceil and sqrt
 
 class TrailingEngine(ABC):
     @abstractmethod
@@ -30,13 +30,14 @@ class BasicTrailingEngine(TrailingEngine):
         return max(info.trade_stops_level, buffer_points) * info.point
 
     def _get_profit_threshold(self, pos: Position) -> float:
-        """Shared helper for dynamic profit threshold based on position margin."""
+        """Shared helper for dynamic profit threshold based on position margin and volatility."""
         from trading_algos.core.broker import Broker
         from trading_algos.config import BASE_PROFIT_TO_ACTIVATE, THRESHOLD_FACTOR_PER_MARGIN
         import MetaTrader5 as mt5
         action = mt5.ORDER_TYPE_BUY if pos.is_buy else mt5.ORDER_TYPE_SELL
         position_margin = Broker.robust_order_calc_margin(action, pos.symbol, pos.volume, pos.price_open)
-        return BASE_PROFIT_TO_ACTIVATE + (position_margin * THRESHOLD_FACTOR_PER_MARGIN)
+        # Use sqrt for slower growth on larger lots/vol
+        return BASE_PROFIT_TO_ACTIVATE + (math.sqrt(position_margin) * THRESHOLD_FACTOR_PER_MARGIN)
 
     def should_set_initial_sl(self, pos: Position) -> bool:
         threshold = self._get_profit_threshold(pos)

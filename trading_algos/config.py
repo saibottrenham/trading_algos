@@ -3,9 +3,9 @@
 
 CHECK_INTERVAL_SEC = 1  # Faster poll for gold spikes (was 2)
 
-# Profit rule base (flat $10; scales with margin factor for vol instruments)
-BASE_PROFIT_TO_ACTIVATE = 10.0  # Base min profit
-THRESHOLD_FACTOR_PER_MARGIN = 0.0625  # Tuned for gold ~25 at 0.5 lot (adjust if needed)
+# Profit rule base (flat for non-gold; gold dynamic with base + per lot)
+BASE_PROFIT_TO_ACTIVATE = 10.0  # Base min profit for all
+THRESHOLD_FACTOR_PER_MARGIN = 0.67  # Tuned for sqrt(margin) scaling: ~20 at 0.1 gold, ~30 at 0.5
 
 # Broker costs (IC Raw typical)
 COMMISSION_PER_LOT = 3.5  # Per side round-turn
