@@ -31,6 +31,7 @@ class BasicTrailingEngine(TrailingEngine):
 
     def _get_profit_threshold(self, pos: Position) -> float:
         """Shared helper for dynamic profit threshold based on position margin."""
+        from trading_algos.core.broker import Broker
         from trading_algos.config import BASE_PROFIT_TO_ACTIVATE, THRESHOLD_FACTOR_PER_MARGIN
         import MetaTrader5 as mt5
         action = mt5.ORDER_TYPE_BUY if pos.is_buy else mt5.ORDER_TYPE_SELL
