@@ -16,3 +16,7 @@ MIN_MULTIPLIER = 1.0
 MAX_MULTIPLIER = 4.0
 ATR_PERIOD = 14
 VOLUME_LOOKBACK = 14
+
+# Dynamic SL buffer (points from current price)
+SL_BUFFER_BASE_POINTS = 30  # Fixed min for small lots
+SL_BUFFER_PER_LOT = 20  # Extra per full lot to handle slippage on bigger vols

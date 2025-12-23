@@ -10,7 +10,7 @@ import time  # Added for throttle
 from trading_algos.config import (
     PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT,
     BASE_MULTIPLIER, VOLUME_SENSITIVITY, MIN_MULTIPLIER, MAX_MULTIPLIER,
-    ATR_PERIOD, VOLUME_LOOKBACK
+    ATR_PERIOD, VOLUME_LOOKBACK, SL_BUFFER_BASE_POINTS, SL_BUFFER_PER_LOT
 )
 
 try:
@@ -71,7 +71,9 @@ class VolumeATRTrailing(BasicTrailingEngine):
         atr = 0.7 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M5) + \
               0.3 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M1, max(ATR_PERIOD//3, 5))
 
-        min_dist = max(info.trade_stops_level * info.point, 30 * info.point)
+        # Dynamic min_dist based on lot size
+        buffer_points = SL_BUFFER_BASE_POINTS + pos.volume * SL_BUFFER_PER_LOT
+        min_dist = max(info.trade_stops_level, buffer_points) * info.point
 
         if pos.is_buy:
             candidate = pos.price_current - mult * atr

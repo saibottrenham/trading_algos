@@ -27,7 +27,7 @@ class BasicTrailingEngine(TrailingEngine):
 
     def calculate_initial_sl(self, pos: Position) -> float:
         from trading_algos.core.broker import Broker
-        from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT
+        from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT, SL_BUFFER_BASE_POINTS, SL_BUFFER_PER_LOT
         import MetaTrader5 as mt5
         info = Broker.get_symbol_info(pos.symbol)
         target_profit = PROFIT_TO_ACTIVATE_TRAILING
@@ -47,12 +47,16 @@ class BasicTrailingEngine(TrailingEngine):
         required_points = math.ceil(required_diff / info.point)
         required_diff = required_points * info.point
 
+        # Dynamic min_dist based on lot size
+        buffer_points = SL_BUFFER_BASE_POINTS + pos.volume * SL_BUFFER_PER_LOT
+        min_dist = max(info.trade_stops_level, buffer_points) * info.point
+
         if pos.is_buy:
             sl = pos.price_open + required_diff
-            sl = min(sl, pos.price_current - max(info.trade_stops_level * info.point, 30 * info.point))
+            sl = min(sl, pos.price_current - min_dist)
         else:
             sl = pos.price_open - required_diff
-            sl = max(sl, pos.price_current + max(info.trade_stops_level * info.point, 30 * info.point))
+            sl = max(sl, pos.price_current + min_dist)
 
         return round(sl, info.digits)
 
