@@ -21,16 +21,29 @@ class BasicTrailingEngine(TrailingEngine):
     def __init__(self):
         self.first_sl_set = set()
 
+    def _get_min_dist(self, pos: Position) -> float:
+        """Shared helper for dynamic min_dist based on lot size."""
+        from trading_algos.core.broker import Broker
+        from trading_algos.config import SL_BUFFER_BASE_POINTS, SL_BUFFER_PER_LOT
+        info = Broker.get_symbol_info(pos.symbol)
+        buffer_points = SL_BUFFER_BASE_POINTS + pos.volume * SL_BUFFER_PER_LOT
+        return max(info.trade_stops_level, buffer_points) * info.point
+
+    def _get_profit_threshold(self, pos: Position) -> float:
+        """Shared helper for dynamic profit threshold based on lot size."""
+        from trading_algos.config import BASE_PROFIT_TO_ACTIVATE, BASE_LOT_FOR_PROFIT
+        return BASE_PROFIT_TO_ACTIVATE * (pos.volume / BASE_LOT_FOR_PROFIT)
+
     def should_set_initial_sl(self, pos: Position) -> bool:
-        from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING
-        return pos.profit >= PROFIT_TO_ACTIVATE_TRAILING and pos.ticket not in self.first_sl_set
+        threshold = self._get_profit_threshold(pos)
+        return pos.profit >= threshold and pos.ticket not in self.first_sl_set
 
     def calculate_initial_sl(self, pos: Position) -> float:
         from trading_algos.core.broker import Broker
-        from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT, SL_BUFFER_BASE_POINTS, SL_BUFFER_PER_LOT
+        from trading_algos.config import COMMISSION_PER_LOT
         import MetaTrader5 as mt5
         info = Broker.get_symbol_info(pos.symbol)
-        target_profit = PROFIT_TO_ACTIVATE_TRAILING
+        target_profit = self._get_profit_threshold(pos)
         action = mt5.ORDER_TYPE_BUY if pos.is_buy else mt5.ORDER_TYPE_SELL
 
         # Estimate k from current position (handles account currency conversion)
@@ -47,9 +60,7 @@ class BasicTrailingEngine(TrailingEngine):
         required_points = math.ceil(required_diff / info.point)
         required_diff = required_points * info.point
 
-        # Dynamic min_dist based on lot size
-        buffer_points = SL_BUFFER_BASE_POINTS + pos.volume * SL_BUFFER_PER_LOT
-        min_dist = max(info.trade_stops_level, buffer_points) * info.point
+        min_dist = self._get_min_dist(pos)  # Use shared helper
 
         if pos.is_buy:
             sl = pos.price_open + required_diff
@@ -65,11 +76,11 @@ class BasicTrailingEngine(TrailingEngine):
 
     def trail(self, pos: Position) -> None:
         from trading_algos.core.broker import Broker
-        from trading_algos.config import PROFIT_TO_ACTIVATE_TRAILING
         info = Broker.get_symbol_info(pos.symbol)
+        threshold = self._get_profit_threshold(pos)
 
         # Low profit: remove SL (override if unwanted)
-        if pos.profit < PROFIT_TO_ACTIVATE_TRAILING and pos.sl != 0.0:
+        if pos.profit < threshold and pos.sl != 0.0:
             Broker.modify_sl(pos.ticket, pos.symbol, 0.0, pos.tp, info.digits)
             return
 
@@ -82,7 +93,7 @@ class BasicTrailingEngine(TrailingEngine):
         # Trail
         if pos.sl != 0.0:
             new_sl = self.calculate_next_sl(pos)
-            point = info.point
+            point = info.point / 2  # Halve buffer to 0.5pt for faster gold trails (was full point)
             should_move = (pos.is_buy and new_sl > pos.sl + point) or \
                           (not pos.is_buy and new_sl < pos.sl - point)
             if should_move:

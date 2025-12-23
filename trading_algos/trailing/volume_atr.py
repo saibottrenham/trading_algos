@@ -8,9 +8,8 @@ import pandas as pd
 import time  # Added for throttle
 
 from trading_algos.config import (
-    PROFIT_TO_ACTIVATE_TRAILING, COMMISSION_PER_LOT,
     BASE_MULTIPLIER, VOLUME_SENSITIVITY, MIN_MULTIPLIER, MAX_MULTIPLIER,
-    ATR_PERIOD, VOLUME_LOOKBACK, SL_BUFFER_BASE_POINTS, SL_BUFFER_PER_LOT
+    ATR_PERIOD, VOLUME_LOOKBACK
 )
 
 try:
@@ -72,9 +71,7 @@ class VolumeATRTrailing(BasicTrailingEngine):
         atr = 0.5 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M5) + \
               0.5 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M1, max(ATR_PERIOD//3, 5))
 
-        # Dynamic min_dist based on lot size
-        buffer_points = SL_BUFFER_BASE_POINTS + pos.volume * SL_BUFFER_PER_LOT
-        min_dist = max(info.trade_stops_level, buffer_points) * info.point
+        min_dist = self._get_min_dist(pos)  # Use shared helper
 
         if pos.is_buy:
             candidate = pos.price_current - mult * atr
@@ -97,11 +94,11 @@ class VolumeATRTrailing(BasicTrailingEngine):
             log_event("REMOVED_FOREIGN_SL", ticket=pos.ticket, old_sl=pos.sl)
             return
 
-        # 2. First time we hit +PROFIT_TO_ACTIVATE_TRAILING → lock exactly PROFIT_TO_ACTIVATE_TRAILING (only if buffer allows full lock)
+        # 2. First time we hit +threshold → lock exactly threshold (only if buffer allows full lock)
         if self.should_set_initial_sl(pos):
             sl = self.calculate_initial_sl(pos)
             locked = pos.profit_if_sl_hit(sl)
-            target = PROFIT_TO_ACTIVATE_TRAILING
+            target = self._get_profit_threshold(pos)
             if locked >= target:  # Ceil ensures >= if buffer allows; no tolerance needed
                 if (pos.is_buy and sl > pos.price_open) or (not pos.is_buy and sl < pos.price_open):
                     if Broker.modify_sl(pos.ticket, pos.symbol, sl, pos.tp, info.digits):
@@ -126,6 +123,7 @@ class VolumeATRTrailing(BasicTrailingEngine):
 
         # Throttled monitoring if below activation (60s/ticket)
         if pos.ticket not in self.last_monitor_log or time.time() - self.last_monitor_log[pos.ticket] > 60:
-            needed_profit = PROFIT_TO_ACTIVATE_TRAILING - pos.profit
+            threshold = self._get_profit_threshold(pos)
+            needed_profit = threshold - pos.profit
             log_event("POSITION_MONITOR", ticket=pos.ticket, current_profit=round(pos.profit, 2), needed_profit=round(needed_profit, 2))
             self.last_monitor_log[pos.ticket] = time.time()

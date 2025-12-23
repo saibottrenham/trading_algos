@@ -3,8 +3,9 @@
 
 CHECK_INTERVAL_SEC = 1  # Faster poll for gold spikes (was 2)
 
-# ONE AND ONLY PROFIT RULE
-PROFIT_TO_ACTIVATE_TRAILING = 10.0  # Wait for +$10 before doing ANYTHING
+# Dynamic profit rule base
+BASE_PROFIT_TO_ACTIVATE = 10.0  # Base for 0.05 lots; scales up
+BASE_LOT_FOR_PROFIT = 0.05  # Reference lot for base profit
 
 # Broker costs
 COMMISSION_PER_LOT = 0  # Your round-turn commission per lot
