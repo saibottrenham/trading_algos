@@ -68,8 +68,9 @@ class VolumeATRTrailing(BasicTrailingEngine):
             mult *= max(0.7, 1 - velocity/60)
         self.last_profit[pos.ticket] = (pos.profit, now)
 
-        atr = 0.7 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M5) + \
-              0.3 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M1, max(ATR_PERIOD//3, 5))
+        # Boost M1 weight for gold spikes (0.5 from 0.3)
+        atr = 0.5 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M5) + \
+              0.5 * self._get_atr(pos.symbol, mt5.TIMEFRAME_M1, max(ATR_PERIOD//3, 5))
 
         # Dynamic min_dist based on lot size
         buffer_points = SL_BUFFER_BASE_POINTS + pos.volume * SL_BUFFER_PER_LOT
@@ -115,7 +116,7 @@ class VolumeATRTrailing(BasicTrailingEngine):
         # 3. Once we own the SL → ratchet only, never remove, never move back
         if pos.ticket in self.first_sl_set:
             new_sl = self.calculate_next_sl(pos)
-            point = info.point
+            point = info.point / 2  # Halve buffer to 0.5pt for faster gold trails (was full point)
             should_move = (pos.is_buy and new_sl > pos.sl + point) or \
                           (not pos.is_buy and new_sl < pos.sl - point)
             if should_move:
