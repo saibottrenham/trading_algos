@@ -53,8 +53,7 @@ def select_position():
     for i, p in enumerate(positions, 1):
         t = "BUY" if p.type == 0 else "SELL"
         sl = f"{p.sl:.5f}" if p.sl else "None"
-        print(f"{i:2}. #{p.ticket} | {p.symbol:8} | {t:4} | {p.volume:4} lots | "
-              f"P/L ${p.profit:+8.2f} | SL {sl} | Comment: {getattr(p, 'comment', 'N/A')}")
+        print(f"{i:2}. #{p.ticket} | {p.symbol:8} | {t:4} | {p.volume:4} lots | P/L ${p.profit:+8.2f} | SL {sl} | Comment: {getattr(p, 'comment', 'N/A')}")
     while True:
         c = input("\nEnter number or ticket: ").strip().lower()  # Removed 'all' option
         if c.isdigit():
@@ -129,15 +128,8 @@ def main():
                     new_p = new_pos_data[0]
                     info = Broker.get_symbol_info(new_p.symbol)
                     digits = info.digits
-                    tp = new_p.tp
-                    # Ignore TP check first
-                    if args.ignore_tp_positions and tp != 0.0:
-                        if new_ticket not in last_skip_log or time.time() - last_skip_log[new_ticket] > 60:
-                            log_event("SKIPPED_TP_POSITION", ticket=new_ticket, tp_value=tp)
-                            last_skip_log[new_ticket] = time.time()
-                        continue
                     # Auto trigger parse
-                    scaled_tp = int(tp * (10 ** digits))
+                    scaled_tp = int(new_p.tp * (10 ** digits))
                     full_str = str(scaled_tp)
                     is_auto = False
                     target = None
@@ -153,7 +145,18 @@ def main():
                         except ValueError:
                             is_auto = False
                     if is_auto:
-                        Broker.modify_sl(new_ticket, new_p.symbol, new_p.sl, 0.0, digits)
+                        success = Broker.modify_sl(new_ticket, new_p.symbol, new_p.sl, 0.0, digits)
+                        if success:
+                            new_pos_data = Broker.robust_positions_get(ticket=new_ticket)
+                            if new_pos_data:
+                                new_p = new_pos_data[0]
+                            else:
+                                log_event("REFETCH_FAILED", ticket=new_ticket)
+                                continue
+                        else:
+                            log_event("MODIFY_FAILED", ticket=new_ticket)
+                            is_auto = False
+                    if is_auto:
                         log_event("AUTO_TRIGGER_DETECTED", ticket=new_ticket, mode=mode, target=target)
                         auto_positions[new_ticket] = {
                             'target': target,
@@ -163,6 +166,12 @@ def main():
                             'volume': new_p.volume,
                             'last_sl': new_p.sl,
                         }
+                    # Now check ignore with possibly updated tp
+                    if args.ignore_tp_positions and new_p.tp != 0.0:
+                        if new_ticket not in last_skip_log or time.time() - last_skip_log[new_ticket] > 60:
+                            log_event("SKIPPED_TP_POSITION", ticket=new_ticket, tp_value=new_p.tp)
+                            last_skip_log[new_ticket] = time.time()
+                        continue
                     new_pos_obj = Position.from_mt5(new_p)
                     engine.trail(new_pos_obj)
                     active_tickets.add(new_ticket)
@@ -178,21 +187,11 @@ def main():
                     active_tickets.discard(ticket)
                     continue
                 p = cur_pos_data[0]
-                # Mid-run check: If TP added later and flag set, skip trail + drop
-                if args.ignore_tp_positions and p.tp != 0.0:
-                    if ticket not in last_skip_log or time.time() - last_skip_log[ticket] > 60:
-                        log_event("SKIPPED_TP_POSITION", ticket=ticket, tp_value=p.tp)
-                        last_skip_log[ticket] = time.time()
-                    active_tickets.discard(ticket)
-                    continue
-                pos_obj = Position.from_mt5(p)
-                engine.trail(pos_obj)
-                # Auto mid-run activation and SL set detection
                 info = Broker.get_symbol_info(p.symbol)
                 digits = info.digits
+                # Auto mid-run activation
                 if ticket not in auto_positions and p.tp != 0.0:
-                    tp = p.tp
-                    scaled_tp = int(tp * (10 ** digits))
+                    scaled_tp = int(p.tp * (10 ** digits))
                     full_str = str(scaled_tp)
                     is_auto = False
                     target = None
@@ -208,7 +207,19 @@ def main():
                         except ValueError:
                             is_auto = False
                     if is_auto:
-                        Broker.modify_sl(ticket, p.symbol, p.sl, 0.0, digits)
+                        success = Broker.modify_sl(ticket, p.symbol, p.sl, 0.0, digits)
+                        if success:
+                            cur_pos_data = Broker.robust_positions_get(ticket=ticket)
+                            if cur_pos_data:
+                                p = cur_pos_data[0]
+                            else:
+                                log_event("REFETCH_FAILED", ticket=ticket)
+                                active_tickets.discard(ticket)
+                                continue
+                        else:
+                            log_event("MODIFY_FAILED", ticket=ticket)
+                            is_auto = False
+                    if is_auto:
                         log_event("AUTO_TRIGGER_DETECTED_MIDRUN", ticket=ticket, mode=mode, target=target)
                         auto_positions[ticket] = {
                             'target': target,
@@ -218,6 +229,16 @@ def main():
                             'volume': p.volume,
                             'last_sl': p.sl,
                         }
+                # Mid-run check: If TP added later and flag set, skip trail + drop
+                if args.ignore_tp_positions and p.tp != 0.0:
+                    if ticket not in last_skip_log or time.time() - last_skip_log[ticket] > 60:
+                        log_event("SKIPPED_TP_POSITION", ticket=ticket, tp_value=p.tp)
+                        last_skip_log[ticket] = time.time()
+                    active_tickets.discard(ticket)
+                    continue
+                pos_obj = Position.from_mt5(p)
+                engine.trail(pos_obj)
+                # SL set detection for auto
                 if ticket in auto_positions:
                     ap = auto_positions[ticket]
                     cur_sl = p.sl
