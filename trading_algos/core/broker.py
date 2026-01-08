@@ -163,23 +163,17 @@ class Broker:
         timeframe = mt5.TIMEFRAME_M5
         fast_period = 10
         slow_period = 30
-        fast = mt5.iMA(symbol, timeframe, fast_period, 0, mt5.MODE_EMA, mt5.PRICE_CLOSE)
-        slow = mt5.iMA(symbol, timeframe, slow_period, 0, mt5.MODE_EMA, mt5.PRICE_CLOSE)
-        if fast == mt5.INVALID_HANDLE or slow == mt5.INVALID_HANDLE:
-            log_event("TREND_INDICATOR_FAIL", symbol=symbol)
+        rates = Broker.robust_copy_rates(symbol, timeframe, 0, slow_period + 1)
+        if rates is None or len(rates) < slow_period + 1:
+            log_event("RATES_FETCH_FAIL", symbol=symbol)
             return "neutral"
-        fast_buf = mt5.copy_buffer(fast, 0, 0, 1)
-        slow_buf = mt5.copy_buffer(slow, 0, 0, 1)
-        mt5.indicator_release(fast)
-        mt5.indicator_release(slow)
-        if fast_buf is None or slow_buf is None or len(fast_buf) == 0 or len(slow_buf) == 0:
-            return "neutral"
-        fast_val = fast_buf[0]
-        slow_val = slow_buf[0]
+        df = pd.DataFrame(rates)
+        fast_ema = df['close'].ewm(span=fast_period, adjust=False).mean().iloc[-1]
+        slow_ema = df['close'].ewm(span=slow_period, adjust=False).mean().iloc[-1]
         atr = Broker._get_atr(symbol)
-        if abs(fast_val - slow_val) < 0.1 * atr:
+        if abs(fast_ema - slow_ema) < 0.1 * atr:
             return "neutral"
-        return "buy" if fast_val > slow_val else "sell"
+        return "buy" if fast_ema > slow_ema else "sell"
 
     @staticmethod
     def open_market_position(symbol: str, action: int, volume: float, sl: float = 0.0, tp: float = 0.0, deviation: int = 20) -> int:
