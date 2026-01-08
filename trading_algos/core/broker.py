@@ -12,6 +12,7 @@ except ImportError:
     mt5 = None  # type: ignore
 
 import numpy as np
+import pandas as pd
 from trading_algos.core.logger import log_event
 
 @dataclass
@@ -139,3 +140,68 @@ class Broker:
                 raise RuntimeError("Failed to calc margin after retry.")
             log_event("CONNECTION_RESTORED")
         return margin or 0.0
+
+    @staticmethod
+    def _get_atr(symbol: str, timeframe: int = mt5.TIMEFRAME_M5, period: int = 14) -> float:
+        if not _MT5_AVAILABLE:
+            return 1.0  # Mock
+        rates = Broker.robust_copy_rates(symbol, timeframe, 0, period + 1)
+        if rates is None or len(rates) < period + 1:
+            return 0.0
+        df = pd.DataFrame(rates)
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - df['close'].shift()).abs(),
+            (df['low'] - df['close'].shift()).abs()
+        ], axis=1).max(axis=1)
+        return tr.rolling(period).mean().iloc[-1]
+
+    @staticmethod
+    def get_trend(symbol: str) -> str:
+        if not _MT5_AVAILABLE:
+            return "neutral"
+        timeframe = mt5.TIMEFRAME_M5
+        fast_period = 10
+        slow_period = 30
+        fast = mt5.iMA(symbol, timeframe, fast_period, 0, mt5.MODE_EMA, mt5.PRICE_CLOSE)
+        slow = mt5.iMA(symbol, timeframe, slow_period, 0, mt5.MODE_EMA, mt5.PRICE_CLOSE)
+        if fast == mt5.INVALID_HANDLE or slow == mt5.INVALID_HANDLE:
+            log_event("TREND_INDICATOR_FAIL", symbol=symbol)
+            return "neutral"
+        fast_buf = mt5.copy_buffer(fast, 0, 0, 1)
+        slow_buf = mt5.copy_buffer(slow, 0, 0, 1)
+        mt5.indicator_release(fast)
+        mt5.indicator_release(slow)
+        if fast_buf is None or slow_buf is None or len(fast_buf) == 0 or len(slow_buf) == 0:
+            return "neutral"
+        fast_val = fast_buf[0]
+        slow_val = slow_buf[0]
+        atr = Broker._get_atr(symbol)
+        if abs(fast_val - slow_val) < 0.1 * atr:
+            return "neutral"
+        return "buy" if fast_val > slow_val else "sell"
+
+    @staticmethod
+    def open_market_position(symbol: str, action: int, volume: float, sl: float = 0.0, tp: float = 0.0, deviation: int = 20) -> int:
+        if not _MT5_AVAILABLE:
+            log_event("OPEN_MOCK", symbol=symbol, action=action, volume=volume)
+            return 0  # Mock ticket
+        req = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": volume,
+            "type": action,  # 0=buy, 1=sell
+            "sl": sl,
+            "tp": tp,
+            "deviation": deviation,
+            "magic": 0,
+            "comment": "auto_reopen",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        result = mt5.order_send(req)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            log_event("OPEN_FAILED", symbol=symbol, retcode=result.retcode, comment=result.comment)
+            return 0
+        log_event("OPEN_SUCCESS", ticket=result.order, symbol=symbol, volume=volume)
+        return result.order
