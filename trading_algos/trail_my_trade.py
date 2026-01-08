@@ -111,7 +111,8 @@ def main():
         if args.magic: log_event("FILTER_SET", filter_type="magic", value=args.magic)
         if args.comment: log_event("FILTER_SET", filter_type="comment", value=args.comment)
         active_tickets = set()
-        auto_positions = {}  # ticket: dict for auto tracking
+        auto_positions = {}  # ticket: dict for auto tracking (anchors)
+        chained_positions = set()  # tickets for chained adds, to exempt from ignore
 
     last_sleep_log = time.time()  # Throttle sleeping log
     last_skip_log = {}  # Per-ticket throttle for skipped logs
@@ -128,22 +129,15 @@ def main():
                     new_p = new_pos_data[0]
                     info = Broker.get_symbol_info(new_p.symbol)
                     digits = info.digits
-                    # Auto trigger parse
-                    scaled_tp = int(new_p.tp * (10 ** digits))
-                    full_str = str(scaled_tp)
+                    # Auto trigger check (direction-specific sentinel)
                     is_auto = False
                     target = None
-                    mode = 'limited'
-                    if full_str.startswith('888888'):
-                        is_auto = True
-                        mode = 'unlimited'
-                    elif full_str.startswith('888'):
-                        is_auto = True
-                        target_str = full_str[3:]
-                        try:
-                            target = int(target_str) / (10 ** digits)
-                        except ValueError:
-                            is_auto = False
+                    if new_p.type == 0:  # Buy
+                        scaled_tp = int(new_p.tp * (10 ** digits))
+                        full_str = str(scaled_tp)
+                        is_auto = full_str == '888888'
+                    else:  # Sell
+                        is_auto = abs(new_p.tp - 0.08) < 1e-6
                     if is_auto:
                         success = Broker.modify_sl(new_ticket, new_p.symbol, new_p.sl, 0.0, digits)
                         if success:
@@ -157,17 +151,16 @@ def main():
                             log_event("MODIFY_FAILED", ticket=new_ticket)
                             is_auto = False
                     if is_auto:
-                        log_event("AUTO_TRIGGER_DETECTED", ticket=new_ticket, mode=mode, target=target)
+                        log_event("AUTO_TRIGGER_DETECTED", ticket=new_ticket, mode="unlimited", target=target)
                         auto_positions[new_ticket] = {
                             'target': target,
-                            'mode': mode,
                             'direction': 'buy' if new_p.type == 0 else 'sell',
                             'symbol': new_p.symbol,
                             'volume': new_p.volume,
                             'last_sl': new_p.sl,
                         }
-                    # Now check ignore with possibly updated tp
-                    if args.ignore_tp_positions and new_p.tp != 0.0:
+                    # Now check ignore with possibly updated tp (exempt if auto or chained)
+                    if args.ignore_tp_positions and new_p.tp != 0.0 and new_ticket not in auto_positions and new_ticket not in chained_positions:
                         if new_ticket not in last_skip_log or time.time() - last_skip_log[new_ticket] > 60:
                             log_event("SKIPPED_TP_POSITION", ticket=new_ticket, tp_value=new_p.tp)
                             last_skip_log[new_ticket] = time.time()
@@ -184,28 +177,21 @@ def main():
                     log_event("POSITION_CLOSED", ticket=ticket)
                     if ticket in auto_positions:
                         del auto_positions[ticket]
+                    chained_positions.discard(ticket)
                     active_tickets.discard(ticket)
                     continue
                 p = cur_pos_data[0]
                 info = Broker.get_symbol_info(p.symbol)
                 digits = info.digits
-                # Auto mid-run activation
+                # Auto mid-run activation (direction-specific)
                 if ticket not in auto_positions and p.tp != 0.0:
-                    scaled_tp = int(p.tp * (10 ** digits))
-                    full_str = str(scaled_tp)
                     is_auto = False
-                    target = None
-                    mode = 'limited'
-                    if full_str.startswith('888888'):
-                        is_auto = True
-                        mode = 'unlimited'
-                    elif full_str.startswith('888'):
-                        is_auto = True
-                        target_str = full_str[3:]
-                        try:
-                            target = int(target_str) / (10 ** digits)
-                        except ValueError:
-                            is_auto = False
+                    if p.type == 0:  # Buy
+                        scaled_tp = int(p.tp * (10 ** digits))
+                        full_str = str(scaled_tp)
+                        is_auto = full_str == '888888'
+                    else:  # Sell
+                        is_auto = abs(p.tp - 0.08) < 1e-6
                     if is_auto:
                         success = Broker.modify_sl(ticket, p.symbol, p.sl, 0.0, digits)
                         if success:
@@ -220,17 +206,16 @@ def main():
                             log_event("MODIFY_FAILED", ticket=ticket)
                             is_auto = False
                     if is_auto:
-                        log_event("AUTO_TRIGGER_DETECTED_MIDRUN", ticket=ticket, mode=mode, target=target)
+                        log_event("AUTO_TRIGGER_DETECTED_MIDRUN", ticket=ticket, mode="unlimited", target=None)
                         auto_positions[ticket] = {
-                            'target': target,
-                            'mode': mode,
+                            'target': None,
                             'direction': 'buy' if p.type == 0 else 'sell',
                             'symbol': p.symbol,
                             'volume': p.volume,
                             'last_sl': p.sl,
                         }
-                # Mid-run check: If TP added later and flag set, skip trail + drop
-                if args.ignore_tp_positions and p.tp != 0.0:
+                # Mid-run check: If TP added later and flag set, skip trail + drop (exempt auto/chained)
+                if args.ignore_tp_positions and p.tp != 0.0 and ticket not in auto_positions and ticket not in chained_positions:
                     if ticket not in last_skip_log or time.time() - last_skip_log[ticket] > 60:
                         log_event("SKIPPED_TP_POSITION", ticket=ticket, tp_value=p.tp)
                         last_skip_log[ticket] = time.time()
@@ -238,9 +223,21 @@ def main():
                     continue
                 pos_obj = Position.from_mt5(p)
                 engine.trail(pos_obj)
-                # SL set detection for auto
+                # SL set detection for auto (anchors only)
                 if ticket in auto_positions:
                     ap = auto_positions[ticket]
+                    # Check for manual target set on anchor (ignore sentinels)
+                    if ap['target'] is None and p.tp != 0.0:
+                        ignore_sentinel = False
+                        if ap['direction'] == 'buy':
+                            scaled_tp = int(p.tp * (10 ** digits))
+                            full_str = str(scaled_tp)
+                            ignore_sentinel = full_str == '888888'
+                        else:
+                            ignore_sentinel = abs(p.tp - 0.08) < 1e-6
+                        if not ignore_sentinel:
+                            ap['target'] = p.tp
+                            log_event("MANUAL_TARGET_DETECTED", ticket=ticket, target=p.tp)
                     cur_sl = p.sl
                     if cur_sl != 0.0 and cur_sl != ap.get('last_sl', 0.0):
                         log_event("AUTO_SL_SET_DETECTED", ticket=ticket, new_sl=cur_sl)
@@ -268,7 +265,7 @@ def main():
                                 room_condition = (current_price + sl_distance) < ap['target']
                             else:
                                 room_condition = (current_price - sl_distance) > ap['target']
-                        if room_condition or ap['mode'] == 'unlimited':
+                        if room_condition:
                             action = 0 if ap['direction'] == 'buy' else 1
                             open_price = tick.ask if action == 0 else tick.bid
                             margin_req = Broker.robust_order_calc_margin(action, ap['symbol'], ap['volume'], open_price)
@@ -276,8 +273,10 @@ def main():
                             if acc is None or acc.margin_free < margin_req:
                                 log_event("INSUFFICIENT_MARGIN_SKIP_OPEN", ticket=ticket, required=margin_req)
                             else:
-                                new_ticket = Broker.open_market_position(ap['symbol'], action, ap['volume'])
+                                tp_to_set = ap['target'] if ap['target'] is not None else 0.0
+                                new_ticket = Broker.open_market_position(ap['symbol'], action, ap['volume'], tp=tp_to_set)
                                 if new_ticket:
+                                    chained_positions.add(new_ticket)
                                     log_event("AUTO_OPEN_SUCCESS", new_ticket=new_ticket, anchor_ticket=ticket)
 
             if not active_tickets:
