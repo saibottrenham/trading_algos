@@ -221,6 +221,7 @@ def main():
                         log_event("AUTO_SL_SET_DETECTED", ticket=ticket, new_sl=cur_sl)
                         ap['last_sl'] = cur_sl
                         current_trend = Broker.get_trend(ap['symbol'])
+                        log_event("TREND_EVAL", ticket=ticket, current_trend=current_trend)
                         is_same_trend = (current_trend == ap['direction'])
                         is_neutral = (current_trend == 'neutral')
                         trend_reversed = not (is_same_trend or is_neutral)
