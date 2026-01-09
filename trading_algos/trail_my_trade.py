@@ -256,6 +256,10 @@ def main():
                                 new_ticket = Broker.open_market_position(ap['symbol'], action, ap['volume'], tp=tp_to_set)
                                 if new_ticket:
                                     chained_positions.add(new_ticket)
+                                    # Promote to new anchor for chaining
+                                    new_ap = ap.copy()
+                                    new_ap['last_sl'] = 0.0  # Reset for new position's SL detections
+                                    auto_positions[new_ticket] = new_ap
                                     log_event("AUTO_OPEN_SUCCESS", new_ticket=new_ticket, anchor_ticket=ticket)
 
             if not active_tickets:
