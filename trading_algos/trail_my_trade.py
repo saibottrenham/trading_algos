@@ -66,6 +66,26 @@ def select_position():
         print("Invalid — try again")
     return []
 
+def is_auto_trigger(p):
+    """Check if position TP is the auto sentinel (direction-specific)."""
+    if p.type == 0:  # Buy
+        tp_int_str = str(int(p.tp))
+        return tp_int_str == '888888'
+    else:  # Sell
+        return abs(p.tp - 0.08) < 1e-6
+
+def trigger_auto(ticket, symbol, sl, digits):
+    """Modify TP to 0.0 and refetch updated position."""
+    success = Broker.modify_sl(ticket, symbol, sl, 0.0, digits)
+    if not success:
+        log_event("MODIFY_FAILED", ticket=ticket)
+        return False, None
+    cur_pos_data = Broker.robust_positions_get(ticket=ticket)
+    if not cur_pos_data:
+        log_event("REFETCH_FAILED", ticket=ticket)
+        return False, None
+    return True, cur_pos_data[0]
+
 def main():
     if not mt5.initialize():
         print("MT5 not running or not logged in!")  # Kept print for init error
@@ -129,36 +149,20 @@ def main():
                     new_p = new_pos_data[0]
                     info = Broker.get_symbol_info(new_p.symbol)
                     digits = info.digits
-                    # Auto trigger check (direction-specific sentinel)
-                    is_auto = False
+                    # Auto trigger check
                     target = None
-                    if new_p.type == 0:  # Buy
-                        scaled_tp = int(new_p.tp * (10 ** digits))
-                        full_str = str(scaled_tp)
-                        is_auto = full_str == '888888'
-                    else:  # Sell
-                        is_auto = abs(new_p.tp - 0.08) < 1e-6
-                    if is_auto:
-                        success = Broker.modify_sl(new_ticket, new_p.symbol, new_p.sl, 0.0, digits)
+                    if is_auto_trigger(new_p):
+                        success, updated_p = trigger_auto(new_ticket, new_p.symbol, new_p.sl, digits)
                         if success:
-                            new_pos_data = Broker.robust_positions_get(ticket=new_ticket)
-                            if new_pos_data:
-                                new_p = new_pos_data[0]
-                            else:
-                                log_event("REFETCH_FAILED", ticket=new_ticket)
-                                continue
-                        else:
-                            log_event("MODIFY_FAILED", ticket=new_ticket)
-                            is_auto = False
-                    if is_auto:
-                        log_event("AUTO_TRIGGER_DETECTED", ticket=new_ticket, mode="unlimited", target=target)
-                        auto_positions[new_ticket] = {
-                            'target': target,
-                            'direction': 'buy' if new_p.type == 0 else 'sell',
-                            'symbol': new_p.symbol,
-                            'volume': new_p.volume,
-                            'last_sl': new_p.sl,
-                        }
+                            new_p = updated_p
+                            log_event("AUTO_TRIGGER_DETECTED", ticket=new_ticket, mode="unlimited", target=target)
+                            auto_positions[new_ticket] = {
+                                'target': target,
+                                'direction': 'buy' if new_p.type == 0 else 'sell',
+                                'symbol': new_p.symbol,
+                                'volume': new_p.volume,
+                                'last_sl': new_p.sl,
+                            }
                     # Now check ignore with possibly updated tp (exempt if auto or chained)
                     if args.ignore_tp_positions and new_p.tp != 0.0 and new_ticket not in auto_positions and new_ticket not in chained_positions:
                         if new_ticket not in last_skip_log or time.time() - last_skip_log[new_ticket] > 60:
@@ -183,29 +187,11 @@ def main():
                 p = cur_pos_data[0]
                 info = Broker.get_symbol_info(p.symbol)
                 digits = info.digits
-                # Auto mid-run activation (direction-specific)
-                if ticket not in auto_positions and p.tp != 0.0:
-                    is_auto = False
-                    if p.type == 0:  # Buy
-                        scaled_tp = int(p.tp * (10 ** digits))
-                        full_str = str(scaled_tp)
-                        is_auto = full_str == '888888'
-                    else:  # Sell
-                        is_auto = abs(p.tp - 0.08) < 1e-6
-                    if is_auto:
-                        success = Broker.modify_sl(ticket, p.symbol, p.sl, 0.0, digits)
-                        if success:
-                            cur_pos_data = Broker.robust_positions_get(ticket=ticket)
-                            if cur_pos_data:
-                                p = cur_pos_data[0]
-                            else:
-                                log_event("REFETCH_FAILED", ticket=ticket)
-                                active_tickets.discard(ticket)
-                                continue
-                        else:
-                            log_event("MODIFY_FAILED", ticket=ticket)
-                            is_auto = False
-                    if is_auto:
+                # Auto mid-run activation
+                if ticket not in auto_positions and is_auto_trigger(p):
+                    success, updated_p = trigger_auto(ticket, p.symbol, p.sl, digits)
+                    if success:
+                        p = updated_p
                         log_event("AUTO_TRIGGER_DETECTED_MIDRUN", ticket=ticket, mode="unlimited", target=None)
                         auto_positions[ticket] = {
                             'target': None,
@@ -227,17 +213,9 @@ def main():
                 if ticket in auto_positions:
                     ap = auto_positions[ticket]
                     # Check for manual target set on anchor (ignore sentinels)
-                    if ap['target'] is None and p.tp != 0.0:
-                        ignore_sentinel = False
-                        if ap['direction'] == 'buy':
-                            scaled_tp = int(p.tp * (10 ** digits))
-                            full_str = str(scaled_tp)
-                            ignore_sentinel = full_str == '888888'
-                        else:
-                            ignore_sentinel = abs(p.tp - 0.08) < 1e-6
-                        if not ignore_sentinel:
-                            ap['target'] = p.tp
-                            log_event("MANUAL_TARGET_DETECTED", ticket=ticket, target=p.tp)
+                    if ap['target'] is None and p.tp != 0.0 and not is_auto_trigger(p):
+                        ap['target'] = p.tp
+                        log_event("MANUAL_TARGET_DETECTED", ticket=ticket, target=p.tp)
                     cur_sl = p.sl
                     if cur_sl != 0.0 and cur_sl != ap.get('last_sl', 0.0):
                         log_event("AUTO_SL_SET_DETECTED", ticket=ticket, new_sl=cur_sl)
