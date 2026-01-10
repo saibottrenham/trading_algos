@@ -176,7 +176,7 @@ class Broker:
         return "buy" if fast_ema > slow_ema else "sell"
 
     @staticmethod
-    def open_market_position(symbol: str, action: int, volume: float, sl: float = 0.0, tp: float = 0.0, deviation: int = 20) -> int:
+    def open_market_position(symbol: str, action: int, volume: float, sl: float = 0.0, tp: float = 0.0, deviation: int = 20, comment: str = "auto_reopen") -> int:
         if not _MT5_AVAILABLE:
             log_event("OPEN_MOCK", symbol=symbol, action=action, volume=volume)
             return 0  # Mock ticket
@@ -189,7 +189,7 @@ class Broker:
             "tp": tp,
             "deviation": deviation,
             "magic": 0,
-            "comment": "auto_reopen",
+            "comment": comment[:31],  # Truncate to MT5 limit
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
