@@ -75,8 +75,8 @@ def is_auto_trigger(p):
         return abs(p.tp - 0.08) < 1e-6
 
 def trigger_auto(ticket, symbol, sl, digits):
-    """Modify TP to 0.0 and refetch updated position."""
-    success = Broker.modify_sl(ticket, symbol, sl, 0.0, digits)
+    """Modify TP to 0.0 and add comment, then refetch updated position."""
+    success = Broker.modify_sl(ticket, symbol, sl, 0.0, digits, comment="Chain Anchor")
     if not success:
         log_event("MODIFY_FAILED", ticket=ticket)
         return False, None

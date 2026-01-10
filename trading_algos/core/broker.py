@@ -36,7 +36,7 @@ class Broker:
         )
 
     @staticmethod
-    def modify_sl(position_ticket: int, symbol: str, sl: float, tp: float, digits: int) -> bool:
+    def modify_sl(position_ticket: int, symbol: str, sl: float, tp: float, digits: int, comment: str = "") -> bool:
         if not _MT5_AVAILABLE:
             log_event("SL_MODIFY_MOCK", ticket=position_ticket, symbol=symbol, new_sl=sl)
             return True
@@ -50,6 +50,8 @@ class Broker:
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
+        if comment:
+            req["comment"] = comment
         r = mt5.order_send(req)
         success = r.retcode == mt5.TRADE_RETCODE_DONE
         log_event("SL_MODIFY", success=success, ticket=position_ticket, new_sl=sl, retcode=r.retcode)
