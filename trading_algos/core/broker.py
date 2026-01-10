@@ -1,4 +1,3 @@
-# trading_algos/core/broker.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
@@ -191,7 +190,7 @@ class Broker:
             "tp": tp,
             "deviation": deviation,
             "magic": 0,
-            "comment": comment[:31],  # Truncate to MT5 limit
+            "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
