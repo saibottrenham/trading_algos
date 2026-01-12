@@ -1,4 +1,3 @@
-# trading_algos/trail_my_trade.py
 import sys
 import time
 from datetime import datetime
@@ -103,6 +102,10 @@ def main():
 
     engine = select_engine() if not (args.ticket or args.symbol or args.all) else VolumeATRTrailing()  # Default for CLI
 
+    active_tickets = set()
+    auto_chains = {}  # key: (symbol, direction), value: {'tickets': [], 'target': None, 'last_sl': 0.0, 'volume': float, 'symbol': str, 'direction': str}
+    chained_positions = set()  # tickets for chained adds, to exempt from ignore
+
     if not args.all:
         if args.symbol or args.ticket or args.magic or args.comment:
             positions = get_filtered_positions(args.symbol, args.ticket, args.magic, args.comment)
@@ -117,7 +120,6 @@ def main():
             positions = [p for p in positions if p.tp == 0.0]
         log_event("ENGINE_INIT", engine=engine.__class__.__name__)
         log_event("TRAILING_START", num_positions=len(positions))
-        active_tickets = set()
         for pos in positions:
             pos_obj = Position.from_mt5(pos)
             engine.trail(pos_obj)
@@ -130,9 +132,6 @@ def main():
         if args.symbol: log_event("FILTER_SET", filter_type="symbol", value=args.symbol)
         if args.magic: log_event("FILTER_SET", filter_type="magic", value=args.magic)
         if args.comment: log_event("FILTER_SET", filter_type="comment", value=args.comment)
-        active_tickets = set()
-        auto_chains = {}  # key: (symbol, direction), value: {'tickets': [ticket1, ticket2, ...], 'target': None, 'last_sl': 0.0, 'volume': float}
-        chained_positions = set()  # tickets for chained adds, to exempt from ignore
 
     last_sleep_log = time.time()  # Throttle sleeping log
     last_skip_log = {}  # Per-ticket throttle for skipped logs
@@ -162,6 +161,8 @@ def main():
                                 'target': None,
                                 'last_sl': new_p.sl,
                                 'volume': new_p.volume,
+                                'symbol': new_p.symbol,
+                                'direction': 'buy' if new_p.type == 0 else 'sell',
                             }
                             log_event("CHAIN_STARTED", key=key, anchor=new_ticket)
                     # Now check ignore with possibly updated tp (exempt if auto or chained)
@@ -214,6 +215,8 @@ def main():
                             'target': None,
                             'last_sl': p.sl,
                             'volume': p.volume,
+                            'symbol': p.symbol,
+                            'direction': 'buy' if p.type == 0 else 'sell',
                         }
                         log_event("CHAIN_STARTED", key=key, anchor=ticket)
                 # Mid-run check: If TP added later and flag set, skip trail + drop (exempt chained)
