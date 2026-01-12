@@ -1,3 +1,4 @@
+# trading_algos/trail_my_trade.py
 import sys
 import time
 from datetime import datetime
@@ -130,7 +131,7 @@ def main():
         if args.magic: log_event("FILTER_SET", filter_type="magic", value=args.magic)
         if args.comment: log_event("FILTER_SET", filter_type="comment", value=args.comment)
         active_tickets = set()
-        auto_positions = {}  # ticket: dict for auto tracking (anchors)
+        auto_chains = {}  # (symbol, direction): list of active tickets in order, last is anchor
         chained_positions = set()  # tickets for chained adds, to exempt from ignore
 
     last_sleep_log = time.time()  # Throttle sleeping log
@@ -155,15 +156,13 @@ def main():
                         if success:
                             new_p = updated_p
                             log_event("AUTO_TRIGGER_DETECTED", ticket=new_ticket, mode="unlimited", target=target)
-                            auto_positions[new_ticket] = {
-                                'target': target,
-                                'direction': 'buy' if new_p.type == 0 else 'sell',
-                                'symbol': new_p.symbol,
-                                'volume': new_p.volume,
-                                'last_sl': new_p.sl,
-                            }
+                            key = (new_p.symbol, 'buy' if new_p.type == 0 else 'sell')
+                            if key not in auto_chains:
+                                auto_chains[key] = []
+                            auto_chains[key].append(new_ticket)
+                            log_event("CHAIN_STARTED", key=key, anchor=new_ticket)
                     # Now check ignore with possibly updated tp (exempt if auto or chained)
-                    if args.ignore_tp_positions and new_p.tp != 0.0 and new_ticket not in auto_positions and new_ticket not in chained_positions:
+                    if args.ignore_tp_positions and new_p.tp != 0.0 and new_ticket not in chained_positions:
                         if new_ticket not in last_skip_log or time.time() - last_skip_log[new_ticket] > 60:
                             log_event("SKIPPED_TP_POSITION", ticket=new_ticket, tp_value=new_p.tp)
                             last_skip_log[new_ticket] = time.time()
@@ -178,29 +177,35 @@ def main():
                 cur_pos_data = Broker.robust_positions_get(ticket=ticket)
                 if not cur_pos_data:
                     log_event("POSITION_CLOSED", ticket=ticket)
-                    if ticket in auto_positions:
-                        del auto_positions[ticket]
                     chained_positions.discard(ticket)
                     active_tickets.discard(ticket)
+                    # Clean from chains
+                    for key, chain in list(auto_chains.items()):
+                        if ticket in chain:
+                            chain.remove(ticket)
+                            if chain:
+                                new_anchor = chain[-1]
+                                log_event("PROMOTE_PREVIOUS_ANCHOR", key=key, new_anchor=new_anchor)
+                            else:
+                                del auto_chains[key]
+                                log_event("CHAIN_ENDED", key=key)
                     continue
                 p = cur_pos_data[0]
                 info = Broker.get_symbol_info(p.symbol)
                 digits = info.digits
                 # Auto mid-run activation
-                if ticket not in auto_positions and is_auto_trigger(p):
+                if is_auto_trigger(p):
                     success, updated_p = trigger_auto(ticket, p.symbol, p.sl, digits)
                     if success:
                         p = updated_p
                         log_event("AUTO_TRIGGER_DETECTED_MIDRUN", ticket=ticket, mode="unlimited", target=None)
-                        auto_positions[ticket] = {
-                            'target': None,
-                            'direction': 'buy' if p.type == 0 else 'sell',
-                            'symbol': p.symbol,
-                            'volume': p.volume,
-                            'last_sl': p.sl,
-                        }
-                # Mid-run check: If TP added later and flag set, skip trail + drop (exempt auto/chained)
-                if args.ignore_tp_positions and p.tp != 0.0 and ticket not in auto_positions and ticket not in chained_positions:
+                        key = (p.symbol, 'buy' if p.type == 0 else 'sell')
+                        if key not in auto_chains:
+                            auto_chains[key] = []
+                        auto_chains[key].append(ticket)
+                        log_event("CHAIN_STARTED", key=key, anchor=ticket)
+                # Mid-run check: If TP added later and flag set, skip trail + drop (exempt chained)
+                if args.ignore_tp_positions and p.tp != 0.0 and ticket not in chained_positions:
                     if ticket not in last_skip_log or time.time() - last_skip_log[ticket] > 60:
                         log_event("SKIPPED_TP_POSITION", ticket=ticket, tp_value=p.tp)
                         last_skip_log[ticket] = time.time()
@@ -208,9 +213,25 @@ def main():
                     continue
                 pos_obj = Position.from_mt5(p)
                 engine.trail(pos_obj)
-                # SL set detection for auto (anchors only)
-                if ticket in auto_positions:
-                    ap = auto_positions[ticket]
+                # SL set detection for anchors (last in chain)
+                key = None
+                for k, chain in auto_chains.items():
+                    if chain and chain[-1] == ticket:
+                        key = k
+                        break
+                if key:
+                    ap = {
+                        'target': None,  # Manual TP sets it later
+                        'direction': key[1],
+                        'symbol': key[0],
+                        'volume': p.volume,
+                        'last_sl': auto_chains[key][-1] if 'last_sl' in auto_chains[key] else 0.0,  # Per-chain last_sl? Wait, better store per-anchor
+                    }  # Note: To store per-chain ap, need to expand auto_chains to dict of chains with ap
+                    # For simplicity, recalculate ap on fly, store last_sl per chain
+                    if 'last_sl' not in auto_chains[key]:
+                        auto_chains[key] = {'chain': auto_chains[key], 'ap': ap}
+                    chain_data = auto_chains[key]
+                    ap = chain_data['ap']
                     # Check for manual target set on anchor (ignore sentinels)
                     if ap['target'] is None and p.tp != 0.0 and not is_auto_trigger(p):
                         ap['target'] = p.tp
@@ -252,16 +273,11 @@ def main():
                                 log_event("INSUFFICIENT_MARGIN_SKIP_OPEN", ticket=ticket, required=margin_req)
                             else:
                                 tp_to_set = ap['target'] if ap['target'] is not None else 0.0
-                                # Set comment for chained position
                                 comment = f"Chain from #{ticket}"[:31]  # Truncate to MT5 limit
                                 new_ticket = Broker.open_market_position(ap['symbol'], action, ap['volume'], tp=tp_to_set, comment=comment)
                                 if new_ticket:
                                     chained_positions.add(new_ticket)
-                                    # Promote to new anchor, demote old one
-                                    new_ap = ap.copy()
-                                    new_ap['last_sl'] = 0.0  # Reset for new position's SL detections
-                                    auto_positions[new_ticket] = new_ap
-                                    del auto_positions[ticket]  # Remove old anchor from monitoring
+                                    chain_data['chain'].append(new_ticket)
                                     log_event("AUTO_OPEN_SUCCESS", new_ticket=new_ticket, previous_anchor=ticket)
 
             if not active_tickets:
