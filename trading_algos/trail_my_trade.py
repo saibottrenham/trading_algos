@@ -131,7 +131,7 @@ def main():
         if args.magic: log_event("FILTER_SET", filter_type="magic", value=args.magic)
         if args.comment: log_event("FILTER_SET", filter_type="comment", value=args.comment)
         active_tickets = set()
-        auto_chains = {}  # (symbol, direction): list of active tickets in order, last is anchor
+        auto_chains = {}  # key: (symbol, direction), value: {'tickets': [ticket1, ticket2, ...], 'target': None, 'last_sl': 0.0, 'volume': float}
         chained_positions = set()  # tickets for chained adds, to exempt from ignore
 
     last_sleep_log = time.time()  # Throttle sleeping log
@@ -157,9 +157,12 @@ def main():
                             new_p = updated_p
                             log_event("AUTO_TRIGGER_DETECTED", ticket=new_ticket, mode="unlimited", target=target)
                             key = (new_p.symbol, 'buy' if new_p.type == 0 else 'sell')
-                            if key not in auto_chains:
-                                auto_chains[key] = []
-                            auto_chains[key].append(new_ticket)
+                            auto_chains[key] = {
+                                'tickets': [new_ticket],
+                                'target': None,
+                                'last_sl': new_p.sl,
+                                'volume': new_p.volume,
+                            }
                             log_event("CHAIN_STARTED", key=key, anchor=new_ticket)
                     # Now check ignore with possibly updated tp (exempt if auto or chained)
                     if args.ignore_tp_positions and new_p.tp != 0.0 and new_ticket not in chained_positions:
@@ -180,11 +183,17 @@ def main():
                     chained_positions.discard(ticket)
                     active_tickets.discard(ticket)
                     # Clean from chains
-                    for key, chain in list(auto_chains.items()):
-                        if ticket in chain:
-                            chain.remove(ticket)
-                            if chain:
-                                new_anchor = chain[-1]
+                    for key, chain_data in list(auto_chains.items()):
+                        if ticket in chain_data['tickets']:
+                            chain_data['tickets'].remove(ticket)
+                            if chain_data['tickets']:
+                                new_anchor = chain_data['tickets'][-1]
+                                # Fetch current sl of new anchor for last_sl
+                                anchor_data = Broker.robust_positions_get(ticket=new_anchor)
+                                if anchor_data:
+                                    chain_data['last_sl'] = anchor_data[0].sl
+                                else:
+                                    chain_data['last_sl'] = 0.0
                                 log_event("PROMOTE_PREVIOUS_ANCHOR", key=key, new_anchor=new_anchor)
                             else:
                                 del auto_chains[key]
@@ -200,9 +209,12 @@ def main():
                         p = updated_p
                         log_event("AUTO_TRIGGER_DETECTED_MIDRUN", ticket=ticket, mode="unlimited", target=None)
                         key = (p.symbol, 'buy' if p.type == 0 else 'sell')
-                        if key not in auto_chains:
-                            auto_chains[key] = []
-                        auto_chains[key].append(ticket)
+                        auto_chains[key] = {
+                            'tickets': [ticket],
+                            'target': None,
+                            'last_sl': p.sl,
+                            'volume': p.volume,
+                        }
                         log_event("CHAIN_STARTED", key=key, anchor=ticket)
                 # Mid-run check: If TP added later and flag set, skip trail + drop (exempt chained)
                 if args.ignore_tp_positions and p.tp != 0.0 and ticket not in chained_positions:
@@ -215,69 +227,59 @@ def main():
                 engine.trail(pos_obj)
                 # SL set detection for anchors (last in chain)
                 key = None
-                for k, chain in auto_chains.items():
-                    if chain and chain[-1] == ticket:
+                for k, chain_data in auto_chains.items():
+                    if chain_data['tickets'] and chain_data['tickets'][-1] == ticket:
                         key = k
                         break
                 if key:
-                    ap = {
-                        'target': None,  # Manual TP sets it later
-                        'direction': key[1],
-                        'symbol': key[0],
-                        'volume': p.volume,
-                        'last_sl': auto_chains[key][-1] if 'last_sl' in auto_chains[key] else 0.0,  # Per-chain last_sl? Wait, better store per-anchor
-                    }  # Note: To store per-chain ap, need to expand auto_chains to dict of chains with ap
-                    # For simplicity, recalculate ap on fly, store last_sl per chain
-                    if 'last_sl' not in auto_chains[key]:
-                        auto_chains[key] = {'chain': auto_chains[key], 'ap': ap}
                     chain_data = auto_chains[key]
-                    ap = chain_data['ap']
                     # Check for manual target set on anchor (ignore sentinels)
-                    if ap['target'] is None and p.tp != 0.0 and not is_auto_trigger(p):
-                        ap['target'] = p.tp
+                    if chain_data['target'] is None and p.tp != 0.0 and not is_auto_trigger(p):
+                        chain_data['target'] = p.tp
                         log_event("MANUAL_TARGET_DETECTED", ticket=ticket, target=p.tp)
                     cur_sl = p.sl
-                    if cur_sl != 0.0 and cur_sl != ap.get('last_sl', 0.0):
+                    if cur_sl != 0.0 and cur_sl != chain_data['last_sl']:
                         log_event("AUTO_SL_SET_DETECTED", ticket=ticket, new_sl=cur_sl)
-                        ap['last_sl'] = cur_sl
-                        current_trend = Broker.get_trend(ap['symbol'])
+                        chain_data['last_sl'] = cur_sl
+                        current_trend = Broker.get_trend(chain_data['symbol'])
                         log_event("TREND_EVAL", ticket=ticket, current_trend=current_trend)
-                        is_same_trend = (current_trend == ap['direction'])
+                        is_same_trend = (current_trend == chain_data['direction'])
                         is_neutral = (current_trend == 'neutral')
                         trend_reversed = not (is_same_trend or is_neutral)
                         if trend_reversed:
                             log_event("TREND_REVERSED_SKIP_OPEN", ticket=ticket)
                             continue
-                        tick = mt5.symbol_info_tick(ap['symbol'])
+                        tick = mt5.symbol_info_tick(chain_data['symbol'])
                         if tick is None:
-                            log_event("TICK_FETCH_FAIL", symbol=ap['symbol'])
+                            log_event("TICK_FETCH_FAIL", symbol=chain_data['symbol'])
                             continue
-                        if ap['direction'] == 'buy':
+                        if chain_data['direction'] == 'buy':
                             current_price = tick.bid
                             sl_distance = current_price - cur_sl
                         else:
                             current_price = tick.ask
                             sl_distance = cur_sl - current_price
                         room_condition = True
-                        if ap['target'] is not None:
-                            if ap['direction'] == 'buy':
-                                room_condition = (current_price + sl_distance) < ap['target']
+                        if chain_data['target'] is not None:
+                            if chain_data['direction'] == 'buy':
+                                room_condition = (current_price + sl_distance) < chain_data['target']
                             else:
-                                room_condition = (current_price - sl_distance) > ap['target']
+                                room_condition = (current_price - sl_distance) > chain_data['target']
                         if room_condition:
-                            action = 0 if ap['direction'] == 'buy' else 1
+                            action = 0 if chain_data['direction'] == 'buy' else 1
                             open_price = tick.ask if action == 0 else tick.bid
-                            margin_req = Broker.robust_order_calc_margin(action, ap['symbol'], ap['volume'], open_price)
+                            margin_req = Broker.robust_order_calc_margin(action, chain_data['symbol'], chain_data['volume'], open_price)
                             acc = mt5.account_info()
                             if acc is None or acc.margin_free < margin_req:
                                 log_event("INSUFFICIENT_MARGIN_SKIP_OPEN", ticket=ticket, required=margin_req)
                             else:
-                                tp_to_set = ap['target'] if ap['target'] is not None else 0.0
-                                comment = f"from #{ticket}"[:31]  # Truncate to MT5 limit
-                                new_ticket = Broker.open_market_position(ap['symbol'], action, ap['volume'], tp=tp_to_set, comment=comment)
+                                tp_to_set = chain_data['target'] if chain_data['target'] is not None else 0.0
+                                comment = f"Chain from #{ticket}"[:31]  # Truncate to MT5 limit
+                                new_ticket = Broker.open_market_position(chain_data['symbol'], action, chain_data['volume'], tp=tp_to_set, comment=comment)
                                 if new_ticket:
                                     chained_positions.add(new_ticket)
-                                    chain_data['chain'].append(new_ticket)
+                                    chain_data['tickets'].append(new_ticket)
+                                    chain_data['last_sl'] = 0.0  # Reset for new anchor
                                     log_event("AUTO_OPEN_SUCCESS", new_ticket=new_ticket, previous_anchor=ticket)
 
             if not active_tickets:
