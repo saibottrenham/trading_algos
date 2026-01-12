@@ -277,7 +277,7 @@ def main():
                                 log_event("INSUFFICIENT_MARGIN_SKIP_OPEN", ticket=ticket, required=margin_req)
                             else:
                                 tp_to_set = chain_data['target'] if chain_data['target'] is not None else 0.0
-                                comment = f"Chain from #{ticket}"[:31]  # Truncate to MT5 limit
+                                comment = f"from #{ticket}"[:31]  # Truncate to MT5 limit
                                 new_ticket = Broker.open_market_position(chain_data['symbol'], action, chain_data['volume'], tp=tp_to_set, comment=comment)
                                 if new_ticket:
                                     chained_positions.add(new_ticket)
